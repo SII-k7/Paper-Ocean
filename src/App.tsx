@@ -49,9 +49,10 @@ function resolveModelSelection(
   models: CodexModel[],
   saved?: CodexSelection,
 ): CodexSelection | null {
-  const model = models.find((item) => item.id === saved?.model)
-    ?? models.find((item) => item.isDefault)
-    ?? models[0];
+  const selectableModels = models.filter((item) => item.supportedEfforts.length > 0);
+  const model = selectableModels.find((item) => item.id === saved?.model)
+    ?? selectableModels.find((item) => item.isDefault)
+    ?? selectableModels[0];
   if (!model) return null;
   const effort = saved && saved.model === model.id && model.supportedEfforts.includes(saved.effort)
     ? saved.effort
@@ -618,7 +619,8 @@ export default function App() {
             contextDir: conversation.contextDir,
           });
           throwIfCancelled();
-        } catch {
+        } catch (reason) {
+          if (reason instanceof CancelledTurnError) throw reason;
           threadId = undefined;
         }
       }

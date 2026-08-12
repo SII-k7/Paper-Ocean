@@ -2,7 +2,7 @@
 
 Paper Ocean 是一个面向 Windows 与 macOS 的本地优先论文阅读器：左侧连续阅读多篇 PDF，中间用你自己的 ChatGPT/Codex 订阅讨论论文，右侧沿相关工作继续探索。
 
-> 当前版本：v0.3.0。Windows 提供 x64 便携版；macOS 提供同时支持 Apple Silicon 与 Intel 的 universal 未签名预览版 DMG。
+> 当前版本：v0.3.1。Windows 提供 x64 便携版；macOS 提供同时支持 Apple Silicon 与 Intel 的 universal 未签名预览版 DMG。
 
 ![Paper Ocean 方案 A 三栏论文工作台](docs/paper-ocean-workspace.jpg)
 
@@ -28,13 +28,13 @@ Paper Ocean 是一个面向 Windows 与 macOS 的本地优先论文阅读器：�
 
 ### Windows
 
-1. 下载 `Paper-Ocean-0.3.0-win-x64.exe`。
+1. 下载 `Paper-Ocean-0.3.1-win-x64.exe`。
 2. 双击即可运行，不需要安装。
 3. 当前便携版没有商业代码签名；若 SmartScreen 提示，请先确认文件来自本仓库的 Release，再选择“更多信息”继续运行。
 
 ### macOS
 
-1. 下载 `Paper-Ocean-0.3.0-mac-universal.dmg`。
+1. 下载 `Paper-Ocean-0.3.1-mac-universal.dmg`。
 2. 打开 DMG，将 Paper Ocean 拖到 Applications（应用程序）。
 3. 第一次启动时，macOS 可能因应用尚未签名、尚未公证而阻止打开。先尝试打开一次，然后进入“系统设置 → 隐私与安全性”，在相应提示旁选择“仍要打开”。只应对从本仓库 Release 下载并核对过校验和的文件这样操作。
 

@@ -118,6 +118,16 @@ export default function ChatPanel({
 
   const usage = rateLimits?.primary?.usedPercent;
   const indexedPages = scopePapers.reduce((sum, paper) => sum + (paper.pageCount ?? 0), 0);
+  const latestMessage = messages.at(-1);
+  const announcement = busy
+    ? "Codex 正在回答"
+    : latestMessage?.role === "assistant" && !latestMessage.pending
+      ? latestMessage.error
+        ? "Codex 回答失败"
+        : latestMessage.text === "回答已停止。"
+          ? "Codex 回答已停止"
+          : "Codex 回答完成"
+      : "";
 
   return (
     <section className="chat-panel" aria-label="AI 论文对话">
@@ -220,7 +230,7 @@ export default function ChatPanel({
       </div>
 
       <div className="sr-only" aria-live="polite" aria-atomic="true">
-        {busy ? "Codex 正在回答" : messages.at(-1)?.role === "assistant" ? "Codex 回答完成" : ""}
+        {announcement}
       </div>
 
       {hasNewAnswer && (

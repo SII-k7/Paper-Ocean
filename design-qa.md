@@ -1,4 +1,4 @@
-# Scheme A design QA
+# Scheme A design QA · v0.3.1
 
 Final comparison viewport: **1680 × 980**.
 
@@ -23,7 +23,7 @@ Final comparison viewport: **1680 × 980**.
 - Model and reasoning settings persist independently for each paper scope and the all-papers scope.
 - Sol and Terra expose six live efforts; Luna exposes five and correctly omits `ultra`.
 - Chat send produced a streamed answer; Stop changed the pending answer to “回答已停止。” and restored the send control.
-- Keyboard and accessibility semantics cover paper tabs, model radios, scope buttons, dialogs, errors, PDF toolbar, and labeled icon actions. Focus indicators and reduced-motion behavior are present.
+- Keyboard and accessibility semantics cover paper tabs, model radios, scope buttons, dialogs, errors, PDF toolbar, labeled icon actions, and chat completion states. Focus indicators, AA text contrast, and reduced-motion behavior are present.
 
 ## Severity pass
 
