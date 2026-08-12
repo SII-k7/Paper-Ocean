@@ -1,0 +1,98 @@
+{
+  "name": "paper-ocean",
+  "version": "0.3.0",
+  "private": true,
+  "author": "Paper Ocean",
+  "description": "A local-first paper reader for Windows and macOS, powered by a ChatGPT Codex subscription.",
+  "homepage": "https://github.com/SII-k7/Paper-Ocean#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SII-k7/Paper-Ocean.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SII-k7/Paper-Ocean/issues"
+  },
+  "type": "module",
+  "main": "electron/main.mjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "start": "electron .",
+    "build": "vite build",
+    "check": "tsc --noEmit && vite build",
+    "test": "node --test test/*.test.mjs",
+    "smoke": "node scripts/smoke-codex.mjs && node scripts/smoke-paper-services.mjs",
+    "dist": "npm run dist:win",
+    "dist:win": "npm run build && electron-builder --win portable --x64 --publish never",
+    "dist:mac": "npm run build && electron-builder --mac dmg --universal --publish never"
+  },
+  "dependencies": {
+    "lucide-react": "1.31.0",
+    "pdfjs-dist": "6.2.108",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "6.0.5",
+    "electron": "43.4.0",
+    "electron-builder": "26.15.3",
+    "typescript": "7.0.2",
+    "vite": "8.2.1"
+  },
+  "build": {
+    "appId": "io.github.siik7.paperocean",
+    "productName": "Paper Ocean",
+    "asar": true,
+    "npmRebuild": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json",
+      "!**/node_modules/**/*"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "artifactName": "Paper-Ocean-${version}-win-${arch}.${ext}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "artifactName": "Paper-Ocean-${version}-mac-${arch}.${ext}",
+      "category": "public.app-category.education",
+      "minimumSystemVersion": "12.0",
+      "darkModeSupport": true,
+      "identity": null,
+      "hardenedRuntime": false,
+      "notarize": false
+    },
+    "dmg": {
+      "title": "Paper Ocean ${version}",
+      "sign": false,
+      "contents": [
+        {
+          "x": 140,
+          "y": 220,
+          "type": "file"
+        },
+        {
+          "x": 420,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
+  }
+}
