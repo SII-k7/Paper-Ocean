@@ -5,9 +5,11 @@ import {
   ipcMain,
   nativeTheme,
   net,
+  protocol,
   screen,
   shell,
 } from "electron";
+import { createHash } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,7 +18,9 @@ import {
   downloadArxivPaper,
   loadLibrary,
   prepareConversationContext,
+  prepareRecommendationPreview,
   readPdfFile,
+  saveRecommendationThumbnail,
   saveLibrary,
   savePageImage,
   savePaperContext,
@@ -26,15 +30,30 @@ import { windowsSystemFetch } from "./windows-fetch.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APP_ID = "io.github.siik7.paperocean";
-const WINDOW_BACKGROUND = "#0d1015";
+const WINDOW_COLORS = {
+  dark: { background: "#0d1015", chrome: "#0e1218", symbols: "#d6dee8" },
+  light: { background: "#f2f0ea", chrome: "#f7f5ef", symbols: "#27323c" },
+};
 const MIN_WINDOW_WIDTH = 1180;
 const MIN_WINDOW_HEIGHT = 720;
 const IDEAL_WINDOW_WIDTH = 1680;
 const IDEAL_WINDOW_HEIGHT = 980;
 const codex = new CodexClient();
+const localMedia = new Map();
 const systemFetch = process.platform === "win32"
   ? windowsSystemFetch
   : (url, options) => net.fetch(url, options);
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: "paper-ocean",
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    corsEnabled: true,
+    stream: true,
+  },
+}]);
 
 function windows() {
   return BrowserWindow.getAllWindows().filter((window) => !window.isDestroyed());
@@ -55,7 +74,7 @@ function initialWindowSize() {
   };
 }
 
-function platformWindowOptions() {
+function platformWindowOptions(resolvedTheme = nativeTheme.shouldUseDarkColors ? "dark" : "light") {
   if (process.platform === "darwin") {
     return {
       titleBarStyle: "hiddenInset",
@@ -65,11 +84,12 @@ function platformWindowOptions() {
   }
 
   if (process.platform === "win32") {
+    const colors = WINDOW_COLORS[resolvedTheme];
     return {
       titleBarStyle: "hidden",
       titleBarOverlay: {
-        color: "#0e1218",
-        symbolColor: "#d6dee8",
+        color: colors.chrome,
+        symbolColor: colors.symbols,
         height: 48,
       },
     };
@@ -86,7 +106,7 @@ function platformWindowChromeCss() {
       : "";
 
   return `
-    html, body { background: ${WINDOW_BACKGROUND}; }
+    html, body { background: var(--bg); }
 
     .app-header,
     .paper-titlebar {
@@ -102,17 +122,18 @@ function platformWindowChromeCss() {
   `;
 }
 
-function createWindow() {
+function createWindow(resolvedTheme = nativeTheme.shouldUseDarkColors ? "dark" : "light") {
   const size = initialWindowSize();
+  const initialColors = WINDOW_COLORS[resolvedTheme];
   const window = new BrowserWindow({
     ...size,
     minWidth: MIN_WINDOW_WIDTH,
     minHeight: MIN_WINDOW_HEIGHT,
     show: false,
-    backgroundColor: WINDOW_BACKGROUND,
+    backgroundColor: initialColors.background,
     title: "Paper Ocean",
     autoHideMenuBar: true,
-    ...platformWindowOptions(),
+    ...platformWindowOptions(resolvedTheme),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -145,8 +166,78 @@ function createWindow() {
   });
 
   const devUrl = process.env.PAPER_OCEAN_DEV_URL;
-  if (devUrl) window.loadURL(devUrl);
-  else window.loadFile(path.join(__dirname, "..", "dist", "index.html"));
+  if (devUrl) {
+    const themedDevUrl = new URL(devUrl);
+    themedDevUrl.searchParams.set("paperOceanTheme", resolvedTheme);
+    window.loadURL(themedDevUrl.toString());
+  } else {
+    window.loadFile(path.join(__dirname, "..", "dist", "index.html"), {
+      query: { paperOceanTheme: resolvedTheme },
+    });
+  }
+}
+
+async function setApplicationTheme(value, { persist = true } = {}) {
+  const theme = value === "light" ? "light" : "dark";
+  const colors = WINDOW_COLORS[theme];
+  nativeTheme.themeSource = theme;
+  for (const window of windows()) {
+    window.setBackgroundColor(colors.background);
+    if (process.platform === "win32") {
+      window.setTitleBarOverlay({
+        color: colors.chrome,
+        symbolColor: colors.symbols,
+        height: 48,
+      });
+    }
+  }
+  if (persist) {
+    await fs.mkdir(app.getPath("userData"), { recursive: true });
+    await fs.writeFile(userDataPath("theme.txt"), theme, "utf8");
+  }
+  return theme;
+}
+
+async function loadThemePreference() {
+  try {
+    const value = (await fs.readFile(userDataPath("theme.txt"), "utf8")).trim();
+    return value === "light" || value === "dark"
+      ? value
+      : nativeTheme.shouldUseDarkColors ? "dark" : "light";
+  } catch {
+    return nativeTheme.shouldUseDarkColors ? "dark" : "light";
+  }
+}
+
+function exposeLocalMedia(filePath, rootDir) {
+  const resolved = assertWithin(rootDir, filePath, "本地预览文件");
+  const token = createHash("sha256").update(resolved).digest("hex");
+  localMedia.set(token, resolved);
+  return `paper-ocean://media/${token}`;
+}
+
+function registerLocalMediaProtocol() {
+  protocol.handle("paper-ocean", async (request) => {
+    const url = new URL(request.url);
+    const token = url.hostname === "media" ? url.pathname.slice(1) : "";
+    const filePath = /^[a-f0-9]{64}$/.test(token) ? localMedia.get(token) : undefined;
+    if (!filePath || !existsSync(filePath)) {
+      return new Response("Preview not found", { status: 404 });
+    }
+    const extension = path.extname(filePath).toLowerCase();
+    const contentType = extension === ".pdf"
+      ? "application/pdf"
+      : extension === ".webp"
+        ? "image/webp"
+        : "image/png";
+    return new Response(await fs.readFile(filePath), {
+      headers: {
+        "Content-Type": contentType,
+        "Cache-Control": extension === ".pdf" ? "private, no-store" : "private, max-age=86400",
+        "Access-Control-Allow-Origin": "*",
+      },
+    });
+  });
 }
 
 function userDataPath(...parts) {
@@ -201,6 +292,11 @@ function checkedCodexInput(input, { image = false } = {}) {
   if (image && input.pageImagePath) {
     result.pageImagePath = assertWithin(userDataPath("papers"), input.pageImagePath, "页面图片");
   }
+  if (typeof input.selectedText === "string" && input.selectedText.trim()) {
+    result.selectedText = input.selectedText.slice(0, 20_000);
+  } else {
+    delete result.selectedText;
+  }
   return result;
 }
 
@@ -234,11 +330,40 @@ function registerIpc() {
     if (parsed.protocol !== "https:") throw new Error("只允许打开 HTTPS 链接");
     await shell.openExternal(parsed.toString());
   });
+  ipcMain.handle("app:set-theme", (_event, theme) => setApplicationTheme(theme));
 
   ipcMain.handle("library:load", () => loadLibrary(userDataPath("library.json")));
   ipcMain.handle("library:save", (_event, state) => saveLibrary(userDataPath("library.json"), state));
 
   ipcMain.handle("recommendations:fetch", (_event, input) => fetchRecommendations(input, systemFetch));
+  ipcMain.handle("recommendations:prepare-preview", async (_event, arxivId) => {
+    const result = await prepareRecommendationPreview(
+      arxivId,
+      userDataPath("imports"),
+      userDataPath("cache", "recommendation-thumbnails"),
+      systemFetch,
+    );
+    if (result.status === "ready") {
+      return {
+        status: "ready",
+        imageUrl: exposeLocalMedia(result.thumbnailPath, userDataPath("cache", "recommendation-thumbnails")),
+      };
+    }
+    if (result.status === "render") {
+      return {
+        status: "render",
+        pdfUrl: exposeLocalMedia(result.pdfPath, userDataPath("imports")),
+      };
+    }
+    return { status: "missing", reason: result.reason };
+  });
+  ipcMain.handle("recommendations:save-thumbnail", async (_event, input) => {
+    const saved = await saveRecommendationThumbnail(
+      userDataPath("cache", "recommendation-thumbnails"),
+      input,
+    );
+    return exposeLocalMedia(saved.thumbnailPath, userDataPath("cache", "recommendation-thumbnails"));
+  });
 
   ipcMain.handle("codex:status", async () => {
     try {
@@ -268,10 +393,14 @@ function registerIpc() {
 
 app.whenReady().then(async () => {
   app.setAppUserModelId(APP_ID);
-  nativeTheme.themeSource = "dark";
-  await loadCodexPathPreference();
+  nativeTheme.themeSource = "system";
+  registerLocalMediaProtocol();
+  const [, resolvedTheme] = await Promise.all([
+    loadCodexPathPreference(),
+    loadThemePreference().then((theme) => setApplicationTheme(theme, { persist: false })),
+  ]);
   registerIpc();
-  createWindow();
+  createWindow(resolvedTheme);
 
   app.on("activate", () => {
     if (!windows().length) createWindow();

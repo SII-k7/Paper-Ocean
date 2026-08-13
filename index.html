@@ -3,7 +3,39 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
+    <script>
+      (() => {
+        const injected = new URLSearchParams(location.search).get("paperOceanTheme");
+        let saved = null;
+        try {
+          saved = localStorage.getItem("paper-ocean-theme");
+        } catch {
+          // Electron's validated startup theme below remains authoritative.
+        }
+        const theme = injected === "light" || injected === "dark"
+          ? injected
+          : saved === "light" || saved === "dark"
+            ? saved
+            : matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = theme;
+        if (injected === "light" || injected === "dark") {
+          try {
+            localStorage.setItem("paper-ocean-theme", injected);
+          } catch {
+            // The injected theme still applies when renderer storage is unavailable.
+          }
+          try {
+            const cleanUrl = new URL(location.href);
+            cleanUrl.searchParams.delete("paperOceanTheme");
+            history.replaceState(null, "", cleanUrl.href);
+          } catch {
+            // A retained validated query is still safe and only affects this load.
+          }
+        }
+      })();
+    </script>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2377e6b6'/%3E%3Ctext x='32' y='45' text-anchor='middle' font-family='serif' font-size='40' font-weight='700' fill='%230d1713'%3EP%3C/text%3E%3C/svg%3E" />
     <title>Paper Ocean</title>
   </head>

@@ -115,6 +115,7 @@ export function installBrowserDemoBridge() {
     reopenPdf: demoPaper,
     openUrl: demoPaper,
     openExternal: async () => undefined,
+    setTheme: async (theme) => theme,
     saveContext: async ({ paper }) => ({
       paperDir: `browser-demo/${paper.id}`,
       contextPath: `browser-demo/${paper.id}/PAPER_CONTEXT.md`,
@@ -174,6 +175,8 @@ export function installBrowserDemoBridge() {
       },
     },
     recommendations: async () => DEMO_RECOMMENDATIONS,
+    prepareRecommendationPreview: async () => ({ status: "render", pdfUrl: DEMO_PDF_URL }),
+    saveRecommendationThumbnail: async ({ dataUrl }) => dataUrl,
     library: {
       load: async () => savedLibrary,
       save: async (state) => { savedLibrary = state; },

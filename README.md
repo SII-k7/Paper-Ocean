@@ -2,7 +2,7 @@
 
 Paper Ocean 是一个面向 Windows 与 macOS 的本地优先论文阅读器：左侧连续阅读多篇 PDF，中间用你自己的 ChatGPT/Codex 订阅讨论论文，右侧沿相关工作继续探索。
 
-> 当前版本：v0.3.1。Windows 提供 x64 便携版；macOS 提供同时支持 Apple Silicon 与 Intel 的 universal 未签名预览版 DMG。
+> 当前版本：v0.4.0。Windows 提供 x64 便携版；macOS 提供同时支持 Apple Silicon 与 Intel 的 universal 未签名预览版 DMG。
 
 ![Paper Ocean 方案 A 三栏论文工作台](docs/paper-ocean-workspace.jpg)
 
@@ -19,7 +19,9 @@ Paper Ocean 是一个面向 Windows 与 macOS 的本地优先论文阅读器：�
 - PDF 多页连续滚动、页码跟随、跳页、缩放和文本选择。
 - 为每篇论文建立完整的本地全文索引；当前页和选中文本作为额外线索。
 - 同时打开多篇论文，在“当前论文”和“全部论文”两种独立对话上下文间切换。
-- 相关论文只保留近三年结果，综合关联度与知名度排序；可直接在新标签中打开。
+- 明暗双主题一键切换，并记住你的选择；首次启动会自动采用系统当前配色。
+- 面向论文阅读优化的 AI 解读协议：概览类问题会重点讲清方法、网络/系统架构、核心创新、实验证据与局限，并尽可能给出页码依据。
+- 相关论文只保留近三年结果，综合关联度与知名度排序；卡片会按需生成论文首页缩略图，也可直接在新标签中打开。
 - 模型和思考强度可在应用内切换；实际可用项由当前 Codex 账户决定。
 
 ## 下载安装
@@ -28,13 +30,13 @@ Paper Ocean 是一个面向 Windows 与 macOS 的本地优先论文阅读器：�
 
 ### Windows
 
-1. 下载 `Paper-Ocean-0.3.1-win-x64.exe`。
+1. 下载 `Paper-Ocean-0.4.0-win-x64.exe`。
 2. 双击即可运行，不需要安装。
 3. 当前便携版没有商业代码签名；若 SmartScreen 提示，请先确认文件来自本仓库的 Release，再选择“更多信息”继续运行。
 
 ### macOS
 
-1. 下载 `Paper-Ocean-0.3.1-mac-universal.dmg`。
+1. 下载 `Paper-Ocean-0.4.0-mac-universal.dmg`。
 2. 打开 DMG，将 Paper Ocean 拖到 Applications（应用程序）。
 3. 第一次启动时，macOS 可能因应用尚未签名、尚未公证而阻止打开。先尝试打开一次，然后进入“系统设置 → 隐私与安全性”，在相应提示旁选择“仍要打开”。只应对从本仓库 Release 下载并核对过校验和的文件这样操作。
 
@@ -95,6 +97,7 @@ codex login --device-auth
 - PDF 阅读、全文抽取、索引、阅读位置和会话元数据保存在本机 Electron `userData` 目录。
 - 当你向 AI 提问时，所选论文的文本上下文、你的问题，以及需要时的当前页线索会通过本机 Codex 发送给 OpenAI。不要导入你无权上传或高度敏感的材料。
 - arXiv 下载和相关论文推荐需要访问互联网；已下载 PDF 的基础阅读不需要联网。
+- 推荐缩略图只在卡片接近可视区域时生成；预览用 PDF 与缩略图会缓存在本机，随后打开同一论文时会复用文件。超过自动预览大小上限的论文仍可正常点击打开，但卡片会显示占位图。
 - ChatGPT/Codex 凭据由 Codex 自己管理。Paper Ocean 不读取你的密码，也不要求把凭据写入项目目录。
 - Codex 的数据处理方式跟随你的登录方式和 ChatGPT 工作区策略；请结合 [OpenAI 身份验证文档](https://learn.chatgpt.com/docs/auth) 查看适用于你的规则。
 - 当前版本限制单个 PDF 不超过 100 MB。

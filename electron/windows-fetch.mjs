@@ -32,16 +32,19 @@ try {
   $status = 200
   if ($response -and $response.StatusCode) { $status = [int]$response.StatusCode }
   $contentType = ''
+  $contentLength = ''
   if ($response.Headers) { $contentType = [string]$response.Headers['Content-Type'] }
+  if ($response.Headers) { $contentLength = [string]$response.Headers['Content-Length'] }
 } catch {
   if ($_.Exception.Response) {
     $status = [int]$_.Exception.Response.StatusCode
     $contentType = [string]$_.Exception.Response.ContentType
+    $contentLength = [string]$_.Exception.Response.Headers['Content-Length']
   } else {
     throw
   }
 }
-[Console]::Out.WriteLine((@{ status = $status; contentType = $contentType } | ConvertTo-Json -Compress))
+[Console]::Out.WriteLine((@{ status = $status; contentType = $contentType; contentLength = $contentLength } | ConvertTo-Json -Compress))
 `;
 
 const ENCODED_COMMAND = Buffer.from(POWERSHELL_SOURCE, "utf16le").toString("base64");
@@ -135,9 +138,12 @@ export async function windowsSystemFetch(input, options = {}) {
     const body = method === "GET" && existsSync(outputPath)
       ? await fs.readFile(outputPath)
       : null;
+    const headers = {};
+    if (metadata.contentType) headers["Content-Type"] = metadata.contentType;
+    if (metadata.contentLength) headers["Content-Length"] = metadata.contentLength;
     return new Response(body, {
       status: metadata.status,
-      headers: metadata.contentType ? { "Content-Type": metadata.contentType } : undefined,
+      headers,
     });
   } finally {
     if (path.dirname(path.resolve(outputPath)) === path.resolve(tempRoot)) {

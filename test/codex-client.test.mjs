@@ -6,7 +6,16 @@ import path from "node:path";
 import {
   normalizeModelCatalog,
   resolveCodexExecutable,
+  splitAdditionalContextValue,
 } from "../electron/codex-client.mjs";
+
+test("selected paper excerpts are losslessly split below the Codex context limit", () => {
+  const source = `selected ${"A".repeat(1_700)} ${"海".repeat(400)} end`;
+  const chunks = splitAdditionalContextValue(source);
+  assert.ok(chunks.length > 1);
+  assert.equal(chunks.join(""), source);
+  assert.ok(chunks.every((chunk) => Buffer.byteLength(chunk, "utf8") <= 800));
+});
 
 test("model catalog exposes only the three requested GPT-5.6 models", () => {
   const models = normalizeModelCatalog({

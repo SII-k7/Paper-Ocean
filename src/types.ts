@@ -48,6 +48,11 @@ export type Recommendation = {
   reason: string;
 };
 
+export type RecommendationPreview =
+  | { status: "ready"; imageUrl: string }
+  | { status: "render"; pdfUrl: string }
+  | { status: "missing"; reason?: string };
+
 export type ConversationContext = {
   contextDir: string;
   entries: Array<{

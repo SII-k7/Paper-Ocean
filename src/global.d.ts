@@ -9,6 +9,7 @@ import type {
   PdfPageIndex,
   RateLimitInfo,
   Recommendation,
+  RecommendationPreview,
 } from "./types";
 
 declare global {
@@ -18,6 +19,7 @@ declare global {
       reopenPdf(path: string): Promise<OpenedPaper>;
       openUrl(url: string): Promise<OpenedPaper>;
       openExternal(url: string): Promise<void>;
+      setTheme(theme: "dark" | "light"): Promise<"dark" | "light">;
       saveContext(input: {
         paper: PaperRecord;
         pages: PdfPageIndex[];
@@ -44,6 +46,7 @@ declare global {
           contextDir: string;
           entries: ConversationContext["entries"];
           prompt: string;
+          selectedText?: string;
           pageImagePath?: string;
           model?: CodexModel["id"];
           effort?: CodexModel["supportedEfforts"][number];
@@ -56,6 +59,11 @@ declare global {
         abstract?: string;
         arxivId?: string;
       }): Promise<Recommendation[]>;
+      prepareRecommendationPreview(arxivId: string): Promise<RecommendationPreview>;
+      saveRecommendationThumbnail(input: {
+        arxivId: string;
+        dataUrl: string;
+      }): Promise<string>;
       library: {
         load(): Promise<LibraryState>;
         save(state: LibraryState): Promise<void>;

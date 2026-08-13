@@ -9,6 +9,7 @@ import {
 } from "react";
 import { ExternalLink, RefreshCw } from "lucide-react";
 import type { PaperRecord, Recommendation } from "../types";
+import RecommendationThumbnail from "./RecommendationThumbnail";
 
 type Props = {
   paper: PaperRecord | null;
@@ -18,6 +19,7 @@ type Props = {
 type RecommendationCardProps = {
   item: Recommendation;
   index: number;
+  generation: string;
   onOpenArxiv(arxivId: string): void;
 };
 
@@ -51,6 +53,7 @@ const DISCOVERY_LABEL_STYLE: CSSProperties = {
 const RecommendationCard = memo(function RecommendationCard({
   item,
   index,
+  generation,
   onOpenArxiv,
 }: RecommendationCardProps) {
   const accessibleId = useId();
@@ -79,39 +82,34 @@ const RecommendationCard = memo(function RecommendationCard({
         />
       )}
 
-      <div className="recommendation-card__index" aria-hidden="true">
-        {String(index + 1).padStart(2, "0")}
+      <div className="paper-meta" aria-label="论文数据">
+        <span className="recommendation-card__rank">{String(index + 1).padStart(2, "0")}</span>
+        {item.year && <span className="paper-year">{item.year}</span>}
+        {item.citationCount !== undefined && <span>引用 {item.citationCount}</span>}
+        {item.score !== undefined && <span>综合 {Math.round(item.score * 100)}</span>}
       </div>
-      <div className="recommendation-card__body">
-        <div className="paper-meta" aria-label="论文数据">
-          {item.year && <span>{item.year}</span>}
-          {item.citationCount !== undefined && <span>引用 {item.citationCount}</span>}
-          {item.score !== undefined && <span>综合 {Math.round(item.score * 100)}</span>}
-        </div>
-        <h3 id={titleId}>{item.title}</h3>
-        <p className="authors">{item.authors.join(", ") || "作者信息未知"}</p>
-        <div id={relationId} className="relation-tag">{item.reason}</div>
-        {item.abstract && <p className="recommendation-abstract">{item.abstract}</p>}
-        <div className="card-actions" style={CARD_ACTIONS_STYLE}>
-          {item.arxivId && (
-            <button
-              type="button"
-              className="primary-small"
-              aria-label={`在左侧新标签打开《${item.title}》`}
-              onClick={openInReader}
-            >
-              在左侧新标签打开
-            </button>
-          )}
-          {item.url && (
-            <button
-              type="button"
-              aria-label={`打开《${item.title}》的论文主页`}
-              onClick={openPaperPage}
-            >
-              论文主页 <ExternalLink size={10} strokeWidth={1.8} aria-hidden="true" />
-            </button>
-          )}
+      <div className="recommendation-card__content">
+        <RecommendationThumbnail
+          arxivId={item.arxivId}
+          title={item.title}
+          generation={generation}
+        />
+        <div className="recommendation-card__body">
+          <h3 id={titleId}>{item.title}</h3>
+          <p className="authors">{item.authors.join(", ") || "作者信息未知"}</p>
+          <div id={relationId} className="relation-tag">{item.reason}</div>
+          {item.abstract && <p className="recommendation-abstract">{item.abstract}</p>}
+          <div className="card-actions" style={CARD_ACTIONS_STYLE}>
+            {item.url && (
+              <button
+                type="button"
+                aria-label={`打开《${item.title}》的论文主页`}
+                onClick={openPaperPage}
+              >
+                主页 <ExternalLink size={10} strokeWidth={1.8} aria-hidden="true" />
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </article>
@@ -139,6 +137,7 @@ function RecommendationPanel({ paper, onOpenArxiv }: Props) {
       return;
     }
     let cancelled = false;
+    setItems([]);
     setLoading(true);
     setError(null);
     window.paperOcean.recommendations({
@@ -207,6 +206,7 @@ function RecommendationPanel({ paper, onOpenArxiv }: Props) {
             key={item.paperId}
             item={item}
             index={index}
+            generation={`${paper?.id ?? "empty"}:${refreshKey}`}
             onOpenArxiv={openArxiv}
           />
         ))}

@@ -1,13 +1,55 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
 const MAX_PDF_BYTES = 100 * 1024 * 1024;
+const MAX_RECOMMENDATION_PREVIEW_BYTES = 25 * 1024 * 1024;
+const MAX_THUMBNAIL_BYTES = 1024 * 1024;
+// Codex app-server truncates each additionalContext value at 1,000 tokens.
+// A byte-level tokenizer cannot produce more tokens than UTF-8 bytes, so this
+// limit leaves headroom without depending on a model-specific tokenizer.
+export const MAX_ADDITIONAL_CONTEXT_CHUNK_BYTES = 800;
+const arxivDownloadTasks = new Map();
 
 function safePaperId(value) {
   const id = String(value || "");
   if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("论文 ID 无效");
   return id;
+}
+
+function splitByUtf8ByteLimit(value, maxBytes = MAX_ADDITIONAL_CONTEXT_CHUNK_BYTES) {
+  const text = String(value || "");
+  if (!text) return [];
+
+  const chunks = [];
+  let chunkStart = 0;
+  let chunkBytes = 0;
+  for (let index = 0; index < text.length;) {
+    const codePoint = text.codePointAt(index);
+    const width = codePoint > 0xffff ? 2 : 1;
+    const characterBytes = Buffer.byteLength(text.slice(index, index + width), "utf8");
+    if (chunkBytes && chunkBytes + characterBytes > maxBytes) {
+      chunks.push(text.slice(chunkStart, index));
+      chunkStart = index;
+      chunkBytes = 0;
+    }
+    chunkBytes += characterBytes;
+    index += width;
+  }
+  if (chunkStart < text.length) chunks.push(text.slice(chunkStart));
+  return chunks;
+}
+
+function splitPaperIntoSections(content) {
+  const boundaries = [...content.matchAll(/^## 第 \d+ 页(?:\r?\n|$)/gm)].map((match) => match.index);
+  if (!boundaries.length) return [content];
+
+  const sections = [];
+  if (boundaries[0] > 0) sections.push(content.slice(0, boundaries[0]));
+  for (let index = 0; index < boundaries.length; index += 1) {
+    sections.push(content.slice(boundaries[index], boundaries[index + 1] ?? content.length));
+  }
+  return sections.filter(Boolean);
 }
 
 function delay(milliseconds) {
@@ -135,26 +177,140 @@ export async function readPdfFile(filePath) {
   });
 }
 
+function normalizedArxivId(value) {
+  const arxivId = extractArxivId(String(value || ""));
+  if (!arxivId) throw new Error("arXiv ID 无效");
+  return arxivId;
+}
+
+export function arxivPdfCachePath(importsDir, value) {
+  const arxivId = normalizedArxivId(value);
+  return path.join(importsDir, `${arxivId.replaceAll("/", "_")}.pdf`);
+}
+
+function recommendationThumbnailBase(cacheDir, value) {
+  const arxivId = normalizedArxivId(value);
+  const key = createHash("sha256").update(`thumb-v1:${arxivId}`).digest("hex");
+  return path.join(cacheDir, key);
+}
+
+function validThumbnailSignature(buffer, extension) {
+  if (extension === "png") {
+    return buffer.byteLength >= 8
+      && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  }
+  return buffer.byteLength >= 12
+    && buffer.subarray(0, 4).toString("ascii") === "RIFF"
+    && buffer.subarray(8, 12).toString("ascii") === "WEBP";
+}
+
+async function validThumbnailFile(filePath, extension) {
+  try {
+    const stat = await fs.stat(filePath);
+    if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_THUMBNAIL_BYTES) return false;
+    const handle = await fs.open(filePath, "r");
+    try {
+      const header = Buffer.alloc(12);
+      const { bytesRead } = await handle.read(header, 0, 12, 0);
+      return validThumbnailSignature(header.subarray(0, bytesRead), extension);
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return false;
+  }
+}
+
+async function validPdfFile(filePath, maximumBytes = MAX_PDF_BYTES) {
+  try {
+    const stat = await fs.stat(filePath);
+    if (!stat.isFile() || stat.size > maximumBytes || stat.size < 4) return false;
+    const handle = await fs.open(filePath, "r");
+    try {
+      const signature = Buffer.alloc(4);
+      await handle.read(signature, 0, 4, 0);
+      return signature.toString() === "%PDF";
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return false;
+  }
+}
+
+function pdfSizeLimitError(maximumBytes) {
+  const maximumMegabytes = Math.floor(maximumBytes / (1024 * 1024));
+  const error = new Error(`PDF 超过 ${maximumMegabytes} MB，当前操作暂不支持`);
+  error.code = "PDF_SIZE_LIMIT";
+  return error;
+}
+
+async function assertPdfWithinSize(filePath, maximumBytes) {
+  const stat = await fs.stat(filePath);
+  if (stat.size > maximumBytes) throw pdfSizeLimitError(maximumBytes);
+  return filePath;
+}
+
+async function ensureArxivPdfCached(
+  arxivId,
+  importsDir,
+  fetcher,
+  maximumBytes = MAX_PDF_BYTES,
+) {
+  const filePath = arxivPdfCachePath(importsDir, arxivId);
+  if (await validPdfFile(filePath)) {
+    return assertPdfWithinSize(filePath, maximumBytes);
+  }
+
+  const taskKey = `${path.resolve(importsDir)}\n${arxivId}`;
+  const running = arxivDownloadTasks.get(taskKey);
+  if (running) {
+    try {
+      const runningPath = await running.promise;
+      return await assertPdfWithinSize(runningPath, maximumBytes);
+    } catch (error) {
+      if (error?.code === "PDF_SIZE_LIMIT" && running.maximumBytes < maximumBytes) {
+        return ensureArxivPdfCached(arxivId, importsDir, fetcher, maximumBytes);
+      }
+      throw error;
+    }
+  }
+
+  const task = (async () => {
+    const response = await fetchWithRetry(fetcher, `https://arxiv.org/pdf/${arxivId}`, {
+      headers: { "User-Agent": "PaperOcean/0.3 local-reader" },
+    }, { attempts: 3, timeoutMs: 45_000 });
+    if (!response.ok) throw new Error(`arXiv 下载失败（HTTP ${response.status}）`);
+    const arrayBuffer = await response.arrayBuffer();
+    if (arrayBuffer.byteLength > maximumBytes) throw pdfSizeLimitError(maximumBytes);
+    const buffer = Buffer.from(arrayBuffer);
+    if (buffer.subarray(0, 4).toString() !== "%PDF") throw new Error("arXiv 返回的内容不是 PDF");
+
+    await fs.mkdir(importsDir, { recursive: true });
+    const tempPath = `${filePath}.part-${process.pid}-${randomUUID()}`;
+    try {
+      await fs.writeFile(tempPath, buffer);
+      await fs.rm(filePath, { force: true }).catch(() => undefined);
+      await fs.rename(tempPath, filePath);
+    } finally {
+      await fs.rm(tempPath, { force: true }).catch(() => undefined);
+    }
+    return filePath;
+  })().finally(() => arxivDownloadTasks.delete(taskKey));
+
+  arxivDownloadTasks.set(taskKey, { maximumBytes, promise: task });
+  return task;
+}
+
 export async function downloadArxivPaper(input, importsDir, fetcher = globalThis.fetch) {
   const arxivId = extractArxivId(input);
   if (!arxivId) throw new Error("当前版本只支持 arXiv 论文链接或 arXiv ID");
 
-  const pdfUrl = `https://arxiv.org/pdf/${arxivId}`;
-  const [response, metadata] = await Promise.all([
-    fetchWithRetry(fetcher, pdfUrl, {
-      headers: { "User-Agent": "PaperOcean/0.2 local-reader" },
-    }, { attempts: 3, timeoutMs: 45_000 }),
+  const [filePath, metadata] = await Promise.all([
+    ensureArxivPdfCached(arxivId, importsDir, fetcher),
     fetchArxivMetadata(arxivId, fetcher),
   ]);
-  if (!response.ok) throw new Error(`arXiv 下载失败（HTTP ${response.status}）`);
-  const arrayBuffer = await response.arrayBuffer();
-  if (arrayBuffer.byteLength > MAX_PDF_BYTES) throw new Error("PDF 超过 100 MB，当前版本暂不支持");
-  const buffer = Buffer.from(arrayBuffer);
-  if (buffer.subarray(0, 4).toString() !== "%PDF") throw new Error("arXiv 返回的内容不是 PDF");
-
-  await fs.mkdir(importsDir, { recursive: true });
-  const filePath = path.join(importsDir, `${arxivId.replaceAll("/", "_")}.pdf`);
-  await fs.writeFile(filePath, buffer);
+  const buffer = await fs.readFile(filePath);
 
   return openedPaperFromBuffer(buffer, {
     name: `${arxivId}.pdf`,
@@ -164,6 +320,88 @@ export async function downloadArxivPaper(input, importsDir, fetcher = globalThis
     title: metadata?.title,
     abstract: metadata?.abstract,
   });
+}
+
+export async function prepareRecommendationPreview(
+  value,
+  importsDir,
+  thumbnailCacheDir,
+  fetcher = globalThis.fetch,
+) {
+  const arxivId = normalizedArxivId(value);
+  const thumbnailBase = recommendationThumbnailBase(thumbnailCacheDir, arxivId);
+  for (const extension of ["webp", "png"]) {
+    const thumbnailPath = `${thumbnailBase}.${extension}`;
+    if (await validThumbnailFile(thumbnailPath, extension)) {
+      return { status: "ready", arxivId, thumbnailPath };
+    }
+    await fs.rm(thumbnailPath, { force: true }).catch(() => undefined);
+  }
+
+  const cachedPdfPath = arxivPdfCachePath(importsDir, arxivId);
+  const hasCachedPdf = await validPdfFile(cachedPdfPath);
+  if (hasCachedPdf) {
+    const cachedStat = await fs.stat(cachedPdfPath);
+    if (cachedStat.size > MAX_RECOMMENDATION_PREVIEW_BYTES) {
+      return { status: "missing", arxivId, reason: "PDF 较大，打开后再生成预览" };
+    }
+  } else {
+    try {
+      const head = await fetchWithRetry(fetcher, `https://arxiv.org/pdf/${arxivId}`, {
+        method: "HEAD",
+        headers: { "User-Agent": "PaperOcean/0.3 local-reader" },
+      }, { attempts: 1, timeoutMs: 15_000 });
+      const advertisedBytes = Number(head.headers.get("content-length"));
+      if (Number.isFinite(advertisedBytes) && advertisedBytes > MAX_RECOMMENDATION_PREVIEW_BYTES) {
+        return { status: "missing", arxivId, reason: "PDF 较大，打开后再生成预览" };
+      }
+    } catch {
+      // Some mirrors reject HEAD; the guarded PDF download remains the fallback.
+    }
+  }
+
+  try {
+    const pdfPath = await ensureArxivPdfCached(
+      arxivId,
+      importsDir,
+      fetcher,
+      MAX_RECOMMENDATION_PREVIEW_BYTES,
+    );
+    return { status: "render", arxivId, pdfPath };
+  } catch (error) {
+    return {
+      status: "missing",
+      arxivId,
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export async function saveRecommendationThumbnail(thumbnailCacheDir, { arxivId: value, dataUrl }) {
+  const arxivId = normalizedArxivId(value);
+  const match = String(dataUrl || "").match(/^data:image\/(webp|png);base64,([A-Za-z0-9+/=]+)$/);
+  if (!match) throw new Error("论文缩略图格式无效");
+  const extension = match[1];
+  const buffer = Buffer.from(match[2], "base64");
+  if (!buffer.length || buffer.byteLength > MAX_THUMBNAIL_BYTES) {
+    throw new Error("论文缩略图超过 1 MB");
+  }
+  if (!validThumbnailSignature(buffer, extension)) throw new Error("论文缩略图内容无效");
+
+  await fs.mkdir(thumbnailCacheDir, { recursive: true });
+  const thumbnailBase = recommendationThumbnailBase(thumbnailCacheDir, arxivId);
+  const thumbnailPath = `${thumbnailBase}.${extension}`;
+  const tempPath = `${thumbnailPath}.part-${process.pid}-${randomUUID()}`;
+  try {
+    await fs.writeFile(tempPath, buffer);
+    await fs.rm(thumbnailPath, { force: true }).catch(() => undefined);
+    await fs.rename(tempPath, thumbnailPath);
+  } finally {
+    await fs.rm(tempPath, { force: true }).catch(() => undefined);
+  }
+  const staleExtension = extension === "webp" ? "png" : "webp";
+  await fs.rm(`${thumbnailBase}.${staleExtension}`, { force: true }).catch(() => undefined);
+  return { arxivId, thumbnailPath };
 }
 
 export async function savePaperContext(rootDir, { paper, pages }) {
@@ -217,15 +455,16 @@ export async function prepareConversationContext(rootDir, { scopeKey, papers }) 
   const papersDir = path.join(contextDir, "papers");
   await fs.mkdir(papersDir, { recursive: true });
 
-  const entries = [];
+  const paperEntries = [];
   const manifest = [
     "# Paper Ocean 研究上下文",
     "",
     `- 对话范围：${scopeKey === "all" ? "全部已打开论文" : "单篇论文"}`,
     `- 论文数量：${uniquePapers.length}`,
-    "- 每篇论文均以页码标题保存完整提取文本。",
+    "- 论文正文均位于 untrusted 上下文；本清单只描述应用生成的标识与顺序。",
+    "- 同一论文的分片按键中的 chunk 编号升序连续阅读。",
     "",
-    "## 论文清单",
+    "## 应用生成的论文映射",
     "",
   ];
   let characterCount = 0;
@@ -240,33 +479,51 @@ export async function prepareConversationContext(rootDir, { scopeKey, papers }) 
       throw new Error(`《${paper.title}》的全文索引尚未完成，请先在左侧打开并等待索引完成`);
     }
 
-    const fileName = `${String(index + 1).padStart(2, "0")}-${paper.id}.md`;
-    const targetPath = path.join(papersDir, fileName);
-    await fs.writeFile(targetPath, content, "utf8");
     characterCount += content.length;
-    entries.push({
-      key: `paper-${paper.id}`,
-      path: targetPath,
-      kind: "untrusted",
-    });
+    const paperKey = `paper-${createHash("sha256").update(paper.id).digest("hex").slice(0, 24)}`;
+    const sections = splitPaperIntoSections(content);
+    let chunkNumber = 0;
+    for (let sectionIndex = 0; sectionIndex < sections.length; sectionIndex += 1) {
+      const sectionChunks = splitByUtf8ByteLimit(sections[sectionIndex]);
+      for (let partIndex = 0; partIndex < sectionChunks.length; partIndex += 1) {
+        chunkNumber += 1;
+        const sequence = String(chunkNumber).padStart(6, "0");
+        const section = String(sectionIndex + 1).padStart(5, "0");
+        const part = String(partIndex + 1).padStart(5, "0");
+        const key = `${paperKey}-chunk-${sequence}-section-${section}-part-${part}`;
+        const fileName = `${key}.md`;
+        const targetPath = path.join(papersDir, fileName);
+        await fs.writeFile(targetPath, sectionChunks[partIndex], "utf8");
+        paperEntries.push({ key, path: targetPath, kind: "untrusted" });
+      }
+    }
     manifest.push(
-      `### ${index + 1}. ${paper.title}`,
+      `### 论文 ${index + 1}`,
       "",
-      `- 全文文件：papers/${fileName}`,
-      paper.pageCount ? `- 页数：${paper.pageCount}` : null,
-      paper.arxivId ? `- arXiv：${paper.arxivId}` : null,
+      `- opaque paper ID：${paper.id}`,
+      `- untrusted 分片键前缀：${paperKey}-chunk-`,
+      `- untrusted 分片数量：${chunkNumber}`,
       `- 提取文本字符数：${content.length}`,
       "",
     );
   }
 
-  const manifestPath = path.join(contextDir, "CONTEXT_MANIFEST.md");
-  await fs.writeFile(manifestPath, manifest.filter(Boolean).join("\n"), "utf8");
-  entries.unshift({ key: "paper-ocean-manifest", path: manifestPath, kind: "application" });
+  const applicationEntries = [];
+  const manifestChunks = splitByUtf8ByteLimit(manifest.filter(Boolean).join("\n"));
+  for (let index = 0; index < manifestChunks.length; index += 1) {
+    const sequence = String(index + 1).padStart(4, "0");
+    const manifestPath = path.join(contextDir, `CONTEXT_MANIFEST.part-${sequence}.md`);
+    await fs.writeFile(manifestPath, manifestChunks[index], "utf8");
+    applicationEntries.push({
+      key: `paper-ocean-manifest-part-${sequence}`,
+      path: manifestPath,
+      kind: "application",
+    });
+  }
 
   return {
     contextDir,
-    entries,
+    entries: [...applicationEntries, ...paperEntries],
     paperCount: uniquePapers.length,
     characterCount,
   };

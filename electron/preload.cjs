@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld("paperOcean", {
   reopenPdf: (path) => ipcRenderer.invoke("paper:reopen", path),
   openUrl: (url) => ipcRenderer.invoke("paper:open-url", url),
   openExternal: (url) => ipcRenderer.invoke("app:open-external", url),
+  setTheme: (theme) => ipcRenderer.invoke("app:set-theme", theme),
   saveContext: (input) => ipcRenderer.invoke("paper:save-context", input),
   savePageImage: (input) => ipcRenderer.invoke("paper:save-page-image", input),
   prepareConversation: (input) => ipcRenderer.invoke("paper:prepare-conversation", input),
@@ -25,6 +26,12 @@ contextBridge.exposeInMainWorld("paperOcean", {
     },
   },
   recommendations: (input) => ipcRenderer.invoke("recommendations:fetch", input),
+  prepareRecommendationPreview: (arxivId) => (
+    ipcRenderer.invoke("recommendations:prepare-preview", arxivId)
+  ),
+  saveRecommendationThumbnail: (input) => (
+    ipcRenderer.invoke("recommendations:save-thumbnail", input)
+  ),
   library: {
     load: () => ipcRenderer.invoke("library:load"),
     save: (state) => ipcRenderer.invoke("library:save", state),
