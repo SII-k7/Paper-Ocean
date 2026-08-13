@@ -202,7 +202,7 @@ export class CodexClient extends EventEmitter {
       clientInfo: {
         name: "paper_ocean",
         title: "Paper Ocean",
-        version: "0.3.1",
+        version: "0.4.0",
       },
       capabilities: {
         experimentalApi: true,

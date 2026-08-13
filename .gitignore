@@ -25,4 +25,5 @@ coverage/
 
 # OS metadata
 .DS_Store
+.paper-ocean-dev/
 Thumbs.db

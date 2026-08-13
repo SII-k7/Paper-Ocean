@@ -111,6 +111,7 @@ export function installBrowserDemoBridge() {
   const emit = (event: CodexEvent) => listeners.forEach((listener) => listener(event));
 
   window.paperOcean = {
+    runtime: "demo",
     openPdf: demoPaper,
     reopenPdf: demoPaper,
     openUrl: demoPaper,

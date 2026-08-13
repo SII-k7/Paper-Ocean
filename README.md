@@ -24,6 +24,29 @@ Paper Ocean 是一个面向 Windows 与 macOS 的本地优先论文阅读器：�
 - 相关论文只保留近三年结果，综合关联度与知名度排序；卡片会按需生成论文首页缩略图，也可直接在新标签中打开。
 - 模型和思考强度可在应用内切换；实际可用项由当前 Codex 账户决定。
 
+## 用 Chrome 快速预览（推荐用于当前迭代）
+
+网页预览会在本机运行与桌面版相同的真实论文和 Codex 后端，不是固定论文或模拟 AI 数据。第一次使用需要安装 [Node.js 22](https://nodejs.org/) 和 npm，然后在 PowerShell 或终端运行：
+
+```bash
+git clone https://github.com/SII-k7/Paper-Ocean.git
+cd Paper-Ocean
+npm ci
+npm run web
+```
+
+保持这个终端窗口开启，并在 Chrome 输入：
+
+```text
+http://127.0.0.1:5173
+```
+
+之后修改代码时，页面会通过 Vite HMR 自动刷新；通常不需要重新下载或打包 EXE。需要停止时，回到终端按 `Ctrl+C`。桌面窗口开发方式仍然是 `npm run dev`。
+
+网页预览继续调用你电脑上的 Codex CLI，并使用它当前登录的 ChatGPT 订阅；不需要在网页中填写 API Key。请先按下文步骤安装并登录 Codex。若启动终端找不到 `codex`，可以在运行命令前通过 `PAPER_OCEAN_CODEX_PATH` 环境变量指定 Codex CLI 的完整路径，再重新执行 `npm run web`。网页预览的论文和对话数据保存在项目内被 Git 忽略的 `.paper-ocean-dev/` 目录，与正式安装版的数据相互隔离。
+
+> 安全提示：网页服务只应监听 `127.0.0.1`。不要把地址改成 `0.0.0.0`，也不要使用端口转发、内网穿透、Tunnel 或公开代理将它暴露到其他设备或互联网；该模式的设计边界是仅供当前电脑本地使用。
+
 ## 下载安装
 
 前往 [GitHub Releases](https://github.com/SII-k7/Paper-Ocean/releases) 下载对应系统的文件。发布页同时提供 `SHA256SUMS.txt`，可用它核对下载完整性。
@@ -105,6 +128,19 @@ codex login --device-auth
 ## 从源码运行
 
 需要 Node.js 22、npm 和已安装的 Codex CLI。
+
+Chrome 本地预览（适合快速迭代，无需重新打包）：
+
+```bash
+git clone https://github.com/SII-k7/Paper-Ocean.git
+cd Paper-Ocean
+npm ci
+npm run web
+```
+
+然后在 Chrome 打开 `http://127.0.0.1:5173`。
+
+Electron 桌面窗口开发模式：
 
 ```bash
 git clone https://github.com/SII-k7/Paper-Ocean.git

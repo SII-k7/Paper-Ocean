@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("paperOcean", {
+  runtime: "electron",
   openPdf: () => ipcRenderer.invoke("paper:open"),
   reopenPdf: (path) => ipcRenderer.invoke("paper:reopen", path),
   openUrl: (url) => ipcRenderer.invoke("paper:open-url", url),

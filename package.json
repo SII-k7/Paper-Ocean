@@ -15,6 +15,7 @@
   "type": "module",
   "main": "electron/main.mjs",
   "scripts": {
+    "web": "node scripts/web.mjs",
     "dev": "node scripts/dev.mjs",
     "start": "electron .",
     "build": "vite build",

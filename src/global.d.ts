@@ -15,6 +15,7 @@ import type {
 declare global {
   interface Window {
     paperOcean: {
+      runtime?: "web" | "electron" | "demo";
       openPdf(): Promise<OpenedPaper | null>;
       reopenPdf(path: string): Promise<OpenedPaper>;
       openUrl(url: string): Promise<OpenedPaper>;

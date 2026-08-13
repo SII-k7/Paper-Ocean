@@ -165,6 +165,20 @@ async function openedPaperFromBuffer(buffer, source) {
   };
 }
 
+export async function importPdfBuffer(buffer, source = {}) {
+  const bytes = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+  if (bytes.byteLength > MAX_PDF_BYTES) throw new Error("PDF 超过 100 MB，当前版本暂不支持");
+  if (bytes.subarray(0, 4).toString() !== "%PDF") throw new Error("所选文件不是有效 PDF");
+  return openedPaperFromBuffer(bytes, {
+    name: String(source.name || "local-paper.pdf"),
+    path: String(source.path || "browser-upload"),
+    sourceUrl: source.sourceUrl,
+    arxivId: source.arxivId,
+    title: source.title,
+    abstract: source.abstract,
+  });
+}
+
 export async function readPdfFile(filePath) {
   const stat = await fs.stat(filePath);
   if (!stat.isFile()) throw new Error("所选路径不是文件");

@@ -851,16 +851,18 @@ export default function App() {
             <Plus size={17} aria-hidden="true" />
             {opening ? "正在打开…" : "本地 PDF"}
           </button>
-          <button
-            type="button"
-            className="settings-button"
-            onClick={chooseCodexExecutable}
-            disabled={busy}
-            aria-label="定位 Codex CLI"
-            title={busy ? "回答完成后可重新定位 Codex CLI" : "定位 Codex CLI"}
-          >
-            <Settings size={18} aria-hidden="true" />
-          </button>
+          {window.paperOcean.runtime !== "web" && (
+            <button
+              type="button"
+              className="settings-button"
+              onClick={chooseCodexExecutable}
+              disabled={busy}
+              aria-label="定位 Codex CLI"
+              title={busy ? "回答完成后可重新定位 Codex CLI" : "定位 Codex CLI"}
+            >
+              <Settings size={18} aria-hidden="true" />
+            </button>
+          )}
         </div>
       </header>
 
