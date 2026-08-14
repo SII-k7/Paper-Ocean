@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, CheckCircle2, Quote, Send, Sparkles, Square } from "lucide-react";
+import MarkdownMessage from "./MarkdownMessage";
 import ModelReasoningPicker from "./ModelReasoningPicker";
 import type {
   ChatMessage,
@@ -223,7 +224,9 @@ export default function ChatPanel({
         {messages.map((message) => (
           <article key={message.id} className={`message message--${message.role} ${message.error ? "message--error" : ""}`}>
             <header>{message.role === "user" ? "你" : "Codex"}{message.page ? ` · 第 ${message.page} 页` : ""}</header>
-            <div>{message.text || (message.pending ? "正在通读全文…" : "")}</div>
+            {message.role === "assistant" && message.text
+              ? <MarkdownMessage text={message.text} />
+              : <div className="message__content">{message.text || (message.pending ? "正在通读全文…" : "")}</div>}
             {message.pending && <span className="typing-indicator" aria-label="Codex 正在回答"><i /><i /><i /></span>}
           </article>
         ))}
