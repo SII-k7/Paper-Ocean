@@ -76,7 +76,7 @@ async function renderFirstPage(pdfUrl: string) {
     document = await loadingTask.promise;
     const page = await document.getPage(1);
     const original = page.getViewport({ scale: 1 });
-    const viewport = page.getViewport({ scale: Math.min(1, 280 / original.width) });
+    const viewport = page.getViewport({ scale: Math.min(1.5, 480 / original.width) });
     const canvas = window.document.createElement("canvas");
     const context = canvas.getContext("2d", { alpha: false });
     if (!context) throw new Error("无法创建缩略图画布");

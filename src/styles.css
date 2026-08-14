@@ -29,7 +29,7 @@ button, input, textarea, select { font: inherit; }
 button { color: inherit; }
 button, select, input, textarea { -webkit-app-region: no-drag; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible,
-[role="tab"]:focus-visible, [role="radio"]:focus-visible {
+[role="tab"]:focus-visible, [role="radio"]:focus-visible, [role="separator"]:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
@@ -151,14 +151,66 @@ button:disabled { cursor: default; opacity: 0.45; }
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(500px, 46fr) minmax(400px, 31fr) minmax(320px, 23fr);
-  gap: 1px;
+  grid-template-columns:
+    minmax(360px, var(--reader-pane-size, 46fr))
+    9px
+    minmax(320px, var(--chat-pane-size, 31fr))
+    9px
+    minmax(250px, var(--recommendation-pane-size, 23fr));
+  gap: 0;
   overflow: hidden;
   background: var(--line);
 }
 .workspace-pane { min-width: 0; min-height: 0; overflow: hidden; background: var(--panel); }
 .reader-pane { display: flex; flex-direction: column; }
 .reader-body { min-height: 0; flex: 1; }
+.pane-resizer {
+  position: relative;
+  z-index: 12;
+  min-width: 9px;
+  height: 100%;
+  touch-action: none;
+  background: var(--line);
+  cursor: col-resize;
+  outline-offset: -2px;
+}
+.pane-resizer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: rgba(255, 255, 255, 0.025);
+  transition: width 160ms var(--ease-spring), background-color 160ms ease, box-shadow 160ms ease;
+}
+.pane-resizer:hover::before, .pane-resizer--active::before, .pane-resizer:focus-visible::before {
+  width: 3px;
+  background: var(--accent);
+  box-shadow: 0 0 14px rgba(103, 230, 180, 0.32);
+}
+.pane-resizer > span {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 32px;
+  transform: translate(-50%, -50%) scaleY(0.72);
+  border-radius: 999px;
+  background: var(--faint);
+  opacity: 0;
+  transition: opacity 160ms ease, transform 180ms var(--ease-spring);
+}
+.pane-resizer:hover > span, .pane-resizer--active > span, .pane-resizer:focus-visible > span {
+  opacity: 0.8;
+  transform: translate(-50%, -50%) scaleY(1);
+}
+body[data-paper-ocean-resizing="true"],
+body[data-paper-ocean-resizing="true"] * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
 
 .paper-tabs {
   height: 40px;
@@ -372,13 +424,13 @@ button:disabled { cursor: default; opacity: 0.45; }
 .paper-meta { display: flex; align-items: center; gap: 8px; color: #7e8996; font-size: 9px; }
 .paper-meta .paper-year { padding: 3px 7px; color: #73d8b0; border-radius: 999px; background: rgba(103, 230, 180, 0.08); }
 .recommendation-card__rank { color: #8793a1; font-family: Georgia, serif; }
-.recommendation-card__content { min-width: 0; display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 11px; margin-top: 10px; }
+.recommendation-card__content { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 10px; }
 .recommendation-card h3 { display: -webkit-box; margin: 0 0 6px; overflow: hidden; color: #e8ecf1; font-size: 12px; font-weight: 690; line-height: 1.38; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .authors { margin: 0 0 8px; overflow: hidden; color: #83909f; font-size: 9px; font-style: italic; text-overflow: ellipsis; white-space: nowrap; }
 .relation-tag { display: inline-flex; align-items: center; gap: 6px; color: #90a49b; font-size: 9px; }
 .relation-tag::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px rgba(103, 230, 180, 0.45); }
 .recommendation-abstract { display: -webkit-box; margin: 8px 0 0; overflow: hidden; color: #828e9c; font-size: 10px; line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
-.recommendation-thumbnail { position: relative; width: 56px; aspect-ratio: 0.75; display: grid; align-self: start; place-items: center; overflow: hidden; color: #64707e; border: 1px solid #303945; border-radius: 8px; background: #0d1218; box-shadow: 0 8px 18px rgba(0, 0, 0, 0.18); }
+.recommendation-thumbnail { position: relative; width: 100%; aspect-ratio: 4 / 3; display: grid; align-self: start; place-items: center; overflow: hidden; color: #64707e; border: 1px solid #303945; border-radius: 11px; background: #0d1218; box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22); }
 .recommendation-thumbnail img { width: 100%; height: 100%; display: block; object-fit: cover; object-position: top center; }
 .recommendation-thumbnail--ready { background: #f7f7f4; }
 .recommendation-thumbnail--missing { background: linear-gradient(145deg, #171e27, #11171e); }
@@ -395,16 +447,15 @@ button:disabled { cursor: default; opacity: 0.45; }
 
 @container discovery (max-width: 250px) {
   .recommendation-card { padding: 13px; }
-  .recommendation-card__content { grid-template-columns: 52px minmax(0, 1fr); gap: 9px; }
-  .recommendation-thumbnail { width: 52px; }
+  .recommendation-card__content { gap: 10px; }
   .recommendation-abstract { display: none; }
   .paper-meta { gap: 6px; }
   .paper-meta span:last-child { display: none; }
 }
 
 @container discovery (min-width: 320px) {
-  .recommendation-card__content { grid-template-columns: 78px minmax(0, 1fr); gap: 13px; }
-  .recommendation-thumbnail { width: 78px; border-radius: 10px; }
+  .recommendation-card__content { gap: 13px; }
+  .recommendation-thumbnail { border-radius: 12px; }
   .recommendation-abstract { -webkit-line-clamp: 2; }
 }
 
@@ -541,7 +592,7 @@ button:disabled { cursor: default; opacity: 0.45; }
 :root[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: #929d95; background-clip: padding-box; }
 
 html.theme-transitioning :where(
-  .app-shell, .app-header, .paper-titlebar, .workspace-grid, .workspace-pane,
+  .app-shell, .app-header, .paper-titlebar, .workspace-grid, .workspace-pane, .pane-resizer,
   .paper-tabs, .paper-tab, .pdf-reader, .pdf-stage, .chat-panel, .chat-topbar,
   .recommendation-panel, .recommendation-heading, .recommendation-card,
   .chat-composer, .message > div, .quick-prompts button, .model-picker__popover
@@ -554,7 +605,6 @@ html.theme-transitioning :where(
 
 @media (max-width: 1320px) {
   .app-header { grid-template-columns: 210px minmax(320px, 1fr) auto; gap: 16px; padding: 0 16px; }
-  .workspace-grid { grid-template-columns: minmax(430px, 45fr) minmax(360px, 33fr) minmax(270px, 22fr); }
   .brand span { display: none; }
   .paper-titlebar { padding: 0 16px; }
   .quick-prompts { grid-template-columns: 1fr; }
@@ -562,7 +612,6 @@ html.theme-transitioning :where(
 }
 
 @media (max-width: 1120px) {
-  .workspace-grid { grid-template-columns: minmax(410px, 45fr) minmax(340px, 34fr) minmax(245px, 21fr); }
   .paper-titlebar__meta span:not(.index-ready) { display: none; }
   .scope-segmented button { padding: 0 8px; }
   .account-chip { max-width: 84px; overflow: hidden; white-space: nowrap; }

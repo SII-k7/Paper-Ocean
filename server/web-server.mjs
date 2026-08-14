@@ -471,7 +471,11 @@ export async function createPaperOceanWebServer({
       completedTurnHandles.add(turnHandle);
       if (activeTurnHandle === turnHandle) activeTurnHandle = undefined;
     }
-    if (event.method === "error" && (!turnHandle || activeTurnHandle === turnHandle)) {
+    if (
+      event.method === "error"
+      && params.willRetry !== true
+      && (!turnHandle || activeTurnHandle === turnHandle)
+    ) {
       activeTurnHandle = undefined;
     }
     if (event.method === "paperOcean/serverExited") {

@@ -204,7 +204,7 @@ export function arxivPdfCachePath(importsDir, value) {
 
 function recommendationThumbnailBase(cacheDir, value) {
   const arxivId = normalizedArxivId(value);
-  const key = createHash("sha256").update(`thumb-v1:${arxivId}`).digest("hex");
+  const key = createHash("sha256").update(`thumb-v2:${arxivId}`).digest("hex");
   return path.join(cacheDir, key);
 }
 
@@ -564,9 +564,26 @@ export async function loadLibrary(filePath) {
         messages,
       ]))
       : {};
-    const messagesByScope = value.messagesByScope && typeof value.messagesByScope === "object"
+    const rawMessagesByScope = value.messagesByScope && typeof value.messagesByScope === "object"
       ? value.messagesByScope
       : legacyMessages;
+    const messagesByScope = Object.fromEntries(Object.entries(rawMessagesByScope).map(([scope, messages]) => [
+      scope,
+      Array.isArray(messages)
+        ? messages.map((message) => {
+            const retryNotice = message?.role === "assistant"
+              && /^Reconnecting(?:\.\.\.)?\s+\d+\/\d+$/i.test(String(message?.text || "").trim());
+            return retryNotice
+              ? {
+                  ...message,
+                  text: "上一次回答因网络中断未完成，请重新发送这个问题。",
+                  pending: false,
+                  error: true,
+                }
+              : message;
+          })
+        : [],
+    ]));
     const legacyThreads = Object.fromEntries(
       papers
         .filter((paper) => typeof paper.threadId === "string" && paper.threadId)

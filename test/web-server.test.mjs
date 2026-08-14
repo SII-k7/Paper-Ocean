@@ -283,5 +283,53 @@ test("web Codex endpoints hide executable paths and translate thread and turn id
     assert.match(turnId, /^turn:/);
     assert.equal(codex.turns[0].threadId, "real-thread-1");
     assert.ok(codex.turns[0].entries.length > 0);
+
+    codex.emit("event", {
+      method: "error",
+      params: {
+        threadId: "real-thread-1",
+        turnId: "real-turn-1",
+        willRetry: true,
+        error: { message: "Reconnecting... 1/5" },
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const overlappingTurn = await fetch(`${web.url}/api/codex/turns/start`, {
+      method: "POST",
+      headers: mutationHeaders(web, cookie, { "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        threadId,
+        contextDir: conversation.contextDir,
+        entries: conversation.entries,
+        prompt: "Do not overlap the retrying turn",
+        model: "gpt-5.6-sol",
+        effort: "low",
+      }),
+    });
+    assert.equal(overlappingTurn.status, 409);
+
+    codex.emit("event", {
+      method: "turn/completed",
+      params: {
+        threadId: "real-thread-1",
+        turn: { id: "real-turn-1", threadId: "real-thread-1", status: "completed" },
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const nextTurn = await fetch(`${web.url}/api/codex/turns/start`, {
+      method: "POST",
+      headers: mutationHeaders(web, cookie, { "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        threadId,
+        contextDir: conversation.contextDir,
+        entries: conversation.entries,
+        prompt: "The completed turn released the slot",
+        model: "gpt-5.6-sol",
+        effort: "low",
+      }),
+    });
+    assert.equal(nextTurn.status, 200);
   });
 });

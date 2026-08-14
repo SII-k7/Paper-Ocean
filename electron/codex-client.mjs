@@ -16,6 +16,16 @@ export const PAPER_OCEAN_MODEL_IDS = [
 ];
 const MODEL_ID_SET = new Set(PAPER_OCEAN_MODEL_IDS);
 
+export function codexAppServerArgs() {
+  return [
+    "--disable",
+    "responses_websockets",
+    "--disable",
+    "responses_websockets_v2",
+    "app-server",
+  ];
+}
+
 export function splitAdditionalContextValue(value, maximumBytes = ADDITIONAL_CONTEXT_CHUNK_BYTES) {
   const text = String(value || "");
   if (!text) return [];
@@ -176,7 +186,7 @@ export class CodexClient extends EventEmitter {
 
   async #startProcess() {
     const useShell = this.executable.toLowerCase().endsWith(".cmd");
-    this.proc = spawn(this.executable, ["app-server"], {
+    this.proc = spawn(this.executable, codexAppServerArgs(), {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       shell: useShell,

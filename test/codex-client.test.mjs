@@ -4,10 +4,21 @@ import { test } from "node:test";
 import os from "node:os";
 import path from "node:path";
 import {
+  codexAppServerArgs,
   normalizeModelCatalog,
   resolveCodexExecutable,
   splitAdditionalContextValue,
 } from "../electron/codex-client.mjs";
+
+test("Paper Ocean starts Codex app-server on the stable HTTP streaming transport", () => {
+  assert.deepEqual(codexAppServerArgs(), [
+    "--disable",
+    "responses_websockets",
+    "--disable",
+    "responses_websockets_v2",
+    "app-server",
+  ]);
+});
 
 test("selected paper excerpts are losslessly split below the Codex context limit", () => {
   const source = `selected ${"A".repeat(1_700)} ${"海".repeat(400)} end`;

@@ -4,6 +4,7 @@ import ChatPanel from "./components/ChatPanel";
 import PaperTabs from "./components/PaperTabs";
 import PdfReader, { type PdfReaderHandle } from "./components/PdfReader";
 import RecommendationPanel from "./components/RecommendationPanel";
+import ResizableWorkspace from "./components/ResizableWorkspace";
 import paperOceanMark from "./assets/paper-ocean-mark.png";
 import { buildPaperTurnPrompt } from "../electron/paper-prompt.mjs";
 import type {
@@ -428,6 +429,7 @@ export default function App() {
       }
 
       if (event.method === "error") {
+        if (params?.willRetry === true) return;
         flushDelta();
         const message = params?.error?.message ?? "Codex 回答失败";
         updateAssistant(active.scopeKey, active.assistantMessageId, (item) => ({
@@ -895,8 +897,8 @@ export default function App() {
         </div>
       )}
 
-      <div className="workspace-grid">
-        <div className="workspace-pane reader-pane">
+      <ResizableWorkspace
+        reader={<>
           <PaperTabs
             papers={openRecords}
             activePaperId={activePaperId}
@@ -918,8 +920,8 @@ export default function App() {
               }}
             />
           </div>
-        </div>
-        <div className="workspace-pane chat-pane">
+        </>}
+        chat={
           <ChatPanel
             activePaper={activeRecord}
             openPapers={openRecords}
@@ -939,11 +941,11 @@ export default function App() {
             onSend={sendMessage}
             onStop={stopAnswer}
           />
-        </div>
-        <div className="workspace-pane recommendation-pane">
+        }
+        recommendations={
           <RecommendationPanel paper={activeRecord} onOpenArxiv={openArxiv} />
-        </div>
-      </div>
+        }
+      />
     </main>
   );
 }
