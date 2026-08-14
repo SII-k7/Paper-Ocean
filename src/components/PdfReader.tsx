@@ -11,6 +11,7 @@ import {
 import { ArrowLeft, ArrowRight, Minus, Plus, Waves } from "lucide-react";
 import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
+import { calculateFitZoom, MAX_PDF_ZOOM, MIN_PDF_ZOOM } from "../pdf-layout.mjs";
 import type { OpenedPaper, PdfPageIndex } from "../types";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -477,13 +478,22 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
   useEffect(() => {
     if (!document || !fitWidth || !stageRef.current) return;
     let cancelled = false;
+    let frame = 0;
     const stage = stageRef.current;
 
     const updateFit = () => {
-      if (cancelled) return;
-      const availableWidth = Math.max(stage.clientWidth - 56, 1);
-      const nextZoom = Math.min(1.4, Math.max(0.65, availableWidth / fallbackSize.width));
-      setZoom((previous) => (Math.abs(previous - nextZoom) >= 0.01 ? nextZoom : previous));
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        if (cancelled) return;
+        const style = window.getComputedStyle(stage);
+        const nextZoom = calculateFitZoom({
+          stageWidth: stage.clientWidth,
+          paddingLeft: Number.parseFloat(style.paddingLeft) || 0,
+          paddingRight: Number.parseFloat(style.paddingRight) || 0,
+          pageWidth: fallbackSize.width,
+        });
+        setZoom((previous) => (Math.abs(previous - nextZoom) >= 0.01 ? nextZoom : previous));
+      });
     };
 
     const observer = new ResizeObserver(updateFit);
@@ -491,6 +501,7 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
     updateFit();
     return () => {
       cancelled = true;
+      window.cancelAnimationFrame(frame);
       observer.disconnect();
     };
   }, [document, fallbackSize.width, fitWidth]);
@@ -578,7 +589,7 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
 
   const updateZoom = (delta: number) => {
     setFitWidth(false);
-    setZoom((value) => Math.min(2.4, Math.max(0.65, value + delta)));
+    setZoom((value) => Math.min(MAX_PDF_ZOOM, Math.max(MIN_PDF_ZOOM, value + delta)));
   };
 
   if (!paper) {

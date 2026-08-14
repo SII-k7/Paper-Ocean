@@ -22,6 +22,7 @@
     "check": "tsc --noEmit && vite build",
     "test": "node --test test/*.test.mjs",
     "smoke": "node scripts/smoke-codex.mjs && node scripts/smoke-paper-services.mjs",
+    "smoke:quality": "node scripts/smoke-answer-quality.mjs",
     "dist": "npm run dist:win",
     "dist:win": "npm run build && electron-builder --win portable --x64 --publish never",
     "dist:mac": "npm run build && electron-builder --mac dmg --universal --publish never"

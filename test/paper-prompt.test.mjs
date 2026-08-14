@@ -13,6 +13,9 @@ test("paper reading instructions prioritize method, architecture, innovation, ev
   assert.match(PAPER_READING_BASE_INSTRUCTIONS, /实验直接支持/);
   assert.match(PAPER_READING_BASE_INSTRUCTIONS, /分析推断/);
   assert.match(PAPER_READING_BASE_INSTRUCTIONS, /理论或非架构型论文/);
+  assert.match(PAPER_READING_BASE_INSTRUCTIONS, /研究生组会级深度/);
+  assert.match(PAPER_READING_BASE_INSTRUCTIONS, /除非用户明确要求一句话、简短或只列要点/);
+  assert.doesNotMatch(PAPER_READING_BASE_INSTRUCTIONS, /表达清楚、紧凑/);
 });
 
 test("single-paper overview prompt carries the full analysis spine and evidence rules", () => {
@@ -32,6 +35,8 @@ test("single-paper overview prompt carries the full analysis spine and evidence 
   assert.match(prompt, /《Example <Paper>》第 6 页/);
   assert.match(prompt, /已作为不可信资料单独提供/);
   assert.match(prompt, /<用户问题>[\s\S]*重点讲架构。[\s\S]*<\/用户问题>/);
+  assert.match(prompt, /本轮默认回答深度：充实、深入、完整/);
+  assert.match(prompt, /方法与架构应占主要篇幅/);
 });
 
 test("multi-paper prompt aligns comparison dimensions and source citations", () => {
@@ -45,5 +50,5 @@ test("multi-paper prompt aligns comparison dimensions and source citations", () 
 
   assert.match(prompt, /全部 2 篇论文综合比较/);
   assert.match(prompt, /方法、架构、创新、实验证据、局限/);
-  assert.match(prompt, /问题很具体时只保留相关部分/);
+  assert.match(prompt, /问题很具体时可以只保留相关部分，但仍要完整解释机制、证据与限定/);
 });
