@@ -20,6 +20,11 @@ declare global {
   interface Window {
     paperOcean: {
       runtime?: "web" | "electron" | "demo";
+      updates?: {
+        status(): Promise<import("./types").AppUpdateState>;
+        check(): Promise<import("./types").AppUpdateState>;
+        apply(): Promise<import("./types").AppUpdateState>;
+      };
       pool?: {
         status(): Promise<import("./types").PoolState>;
         sync(): Promise<import("./types").PoolState>;

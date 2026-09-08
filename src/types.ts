@@ -214,3 +214,14 @@ export type PaperArchiveStatus = {
   entries: Array<{ paperId: string; title: string; category: PaperCategory; reason: string; manual: boolean; path: string; savedAt: number }>;
   failures: Array<{ paperId: string; title: string; error: string }>;
 };
+export interface AppUpdateState {
+  canUpdate: boolean;
+  supported: boolean;
+  mode: "manual" | "nsis" | "deb" | "appimage";
+  message: string;
+  stage: "idle" | "checking" | "available" | "downloading" | "ready" | "installing" | "current" | "error";
+  currentVersion: string;
+  version: string;
+  percent: number;
+  error: string;
+}

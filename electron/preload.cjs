@@ -2,6 +2,11 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("paperOcean", {
   runtime: "electron",
+  updates: {
+    status: () => ipcRenderer.invoke("updates:status"),
+    check: () => ipcRenderer.invoke("updates:check"),
+    apply: () => ipcRenderer.invoke("updates:apply"),
+  },
   pool: {
     status: () => ipcRenderer.invoke("pool:status"),
     sync: () => ipcRenderer.invoke("pool:sync"),

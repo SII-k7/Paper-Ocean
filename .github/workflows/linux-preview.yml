@@ -24,6 +24,7 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run dist:linux
+      - run: node scripts/verify-update-manifests.mjs linux
       - name: Verify packages
         run: |
           version=$(node -p "require('./package.json').version")
@@ -45,6 +46,8 @@ jobs:
           sudo apparmor_parser -r /etc/apparmor.d/paper-ocean-ci
       - name: Run actual Electron window
         run: xvfb-run -a node_modules/.bin/electron scripts/smoke-linux.mjs
+      - name: Verify real update downloads
+        run: xvfb-run -a node_modules/.bin/electron scripts/smoke-update-download.mjs
       - name: Test installed Ubuntu package
         run: |
           npm install --no-save --package-lock=false playwright@1.61.1
@@ -57,6 +60,7 @@ jobs:
           path: |
             release/*.deb
             release/*.AppImage
+            release/latest-linux.yml
       - uses: actions/upload-artifact@v4
         if: always()
         with:

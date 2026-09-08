@@ -39,6 +39,7 @@ import { validateConversationPapers } from "./conversations.mjs";
 import { createPaperSearch } from "./paper-search.mjs";
 import { createPaperArchive, defaultArchiveDirectory } from "./paper-archive.mjs";
 import { createPoolSync } from "./pool-sync.mjs";
+import { createDesktopUpdates } from "./update-runtime.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APP_ID = "io.github.siik7.paperocean";
@@ -191,7 +192,7 @@ function createWindow(resolvedTheme = nativeTheme.shouldUseDarkColors ? "dark" :
       }
     }, 15_000);
   });
-  window.once("closed", () => clearTimeout(closing.timer));
+  window.once("closed", () => { clearTimeout(closing.timer); closing.saveOnly?.reject(new Error("阅读窗口已关闭，请重新打开后更新。")); });
   const revealWindow = () => {
     if (chromeReady && rendererReady && !window.isDestroyed()) window.show();
   };
@@ -354,7 +355,28 @@ function checkedCodexInput(input, { image = false } = {}) {
   return result;
 }
 
+export async function prepareForUpdate() {
+  await Promise.all(windows().map(window => new Promise((resolve, reject) => {
+    const closing = closeRequests.get(window);
+    if (!closing || closing.pending) return reject(new Error("正在保存阅读记录，请稍后重试更新。"));
+    closing.pending = true;
+    closing.saveOnly = { resolve, reject };
+    closing.timer = setTimeout(() => {
+      closing.pending = false;
+      closing.saveOnly = undefined;
+      reject(new Error("阅读记录尚未完成保存，已停止更新，请稍后重试。"));
+    }, 15000);
+    window.webContents.send("library:before-close");
+  })));
+  await flushLibraryWrites(userDataPath("library.json"));
+  await paperArchive?.flush();
+}
+
 function registerIpc() {
+  const updates = createDesktopUpdates({ app, prepareInstall: prepareForUpdate });
+  ipcMain.handle("updates:status", () => updates.status());
+  ipcMain.handle("updates:check", () => updates.check());
+  ipcMain.handle("updates:apply", () => updates.apply());
   const pool = createPoolSync({
     directory: app.getPath("userData"), loadLibrary: () => loadLibrary(userDataPath("library.json")),
     fetcher: (url, options) => net.fetch(url, options),
@@ -442,10 +464,23 @@ function registerIpc() {
     try {
       if (result?.saved !== true) throw new Error(String(result?.error || "阅读记录尚未保存"));
       await flushLibraryWrites(userDataPath("library.json"));
+      if (closing.saveOnly) {
+        const { resolve } = closing.saveOnly;
+        closing.saveOnly = undefined;
+        closing.pending = false;
+        resolve();
+        return;
+      }
       closing.allowed = true;
       window.close();
     } catch (error) {
       closing.pending = false;
+      if (closing.saveOnly) {
+        const { reject } = closing.saveOnly;
+        closing.saveOnly = undefined;
+        reject(error);
+        return;
+      }
       await dialog.showMessageBox(window, {
         type: "error", title: "阅读记录尚未保存", message: "窗口已保留，请重试保存后关闭。",
         detail: error instanceof Error ? error.message : String(error), buttons: ["返回阅读"],

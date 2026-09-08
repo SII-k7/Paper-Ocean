@@ -26,6 +26,8 @@ try {
   assert.equal(pool.papers.length,1);assert.ok(pool.papers[0].seenAt>0);assert.equal(pool.papers[0].askedAt,0);
   assert.equal("path" in pool.papers[0],false);
   assert.equal(await application.evaluate(({app})=>app.isPackaged),true);
+  const updater=await page.evaluate(()=>window.paperOcean.updates.status());
+  assert.equal(updater.supported,true);assert.equal(updater.mode,"deb");
   assert.equal(await page.evaluate(()=>window.paperOcean.runtime),"electron");
   await page.getByText("同步设置",{exact:true}).click();
   await page.getByLabel("WebDAV 文件夹",{exact:true}).fill("https://example.com/pool/");

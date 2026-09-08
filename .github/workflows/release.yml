@@ -111,7 +111,7 @@ jobs:
         shell: bash
         run: |
           cd artifacts
-          sha256sum Paper-Ocean-* > SHA256SUMS.txt
+          sha256sum Paper-Ocean-* latest*.yml > SHA256SUMS.txt
 
       - name: Create GitHub release
         env:
