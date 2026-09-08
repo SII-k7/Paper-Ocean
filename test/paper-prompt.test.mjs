@@ -52,3 +52,21 @@ test("multi-paper prompt aligns comparison dimensions and source citations", () 
   assert.match(prompt, /方法、架构、创新、实验证据、局限/);
   assert.match(prompt, /问题很具体时可以只保留相关部分，但仍要完整解释机制、证据与限定/);
 });
+
+test("partial evidence never claims full-text or image coverage and uses paper-bound citations", () => {
+  const id="a".repeat(24);
+  const prompt=buildPaperTurnPrompt({mode:"single",characterCount:1000,papers:[{id,title:"Long paper",pageCount:100}],hasSelection:false,question:"解释消融",coverage:{complete:false,providedPages:4,totalPages:100},hasPageImage:false});
+  assert.match(prompt,/覆盖 4\/100 页/);
+  assert.match(prompt,/仅相关页面或节选/);
+  assert.match(prompt,/原文页图：未提供/);
+  assert.ok(prompt.includes(`#paper=${id}&page=N`));
+});
+
+test("brief and balanced preferences remove the mandatory deep overview outline", () => {
+  for (const depth of ["brief","balanced"]) {
+    const prompt=buildPaperTurnPrompt({mode:"single",characterCount:10,papers:[{title:"Paper"}],hasSelection:false,question:"解释核心结论",answerDepth:depth});
+    assert.match(prompt,depth==="brief" ? /默认回答深度：简短/ : /默认回答深度：标准/);
+    assert.doesNotMatch(prompt,/必须继续完成方法、架构/);
+    assert.match(prompt,/每个关键事实/);
+  }
+});

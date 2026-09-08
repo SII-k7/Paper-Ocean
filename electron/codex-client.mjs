@@ -5,15 +5,13 @@ import path from "node:path";
 import readline from "node:readline";
 import { spawn } from "node:child_process";
 import { PAPER_READING_BASE_INSTRUCTIONS } from "./paper-prompt.mjs";
+import { READING_MODEL, fixedReadingSelection } from "./reading-model.mjs";
 
 const REQUEST_TIMEOUT_MS = 30_000;
+const LOGIN_START_TIMEOUT_MS = 10_000;
 const MODEL_CACHE_MS = 60_000;
 const ADDITIONAL_CONTEXT_CHUNK_BYTES = 800;
-export const PAPER_OCEAN_MODEL_IDS = [
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.6-luna",
-];
+export const PAPER_OCEAN_MODEL_IDS = [READING_MODEL];
 const MODEL_ID_SET = new Set(PAPER_OCEAN_MODEL_IDS);
 
 export function codexAppServerArgs() {
@@ -271,7 +269,10 @@ export class CodexClient extends EventEmitter {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`${method} 请求超时`));
+        const error = new Error(`${method} 请求超时`);
+        error.code = "CODEX_REQUEST_TIMEOUT";
+        error.method = method;
+        reject(error);
       }, timeoutMs);
 
       this.pending.set(id, { resolve, reject, timer });
@@ -286,7 +287,7 @@ export class CodexClient extends EventEmitter {
 
   async account() {
     await this.start();
-    const result = await this.request("account/read", { refreshToken: true });
+    const result = await this.request("account/read", { refreshToken: false });
     const account = result?.account ?? null;
     return {
       connected: account?.type === "chatgpt",
@@ -297,14 +298,24 @@ export class CodexClient extends EventEmitter {
   }
 
   async login() {
-    await this.start();
-    const account = await this.account();
-    if (account.connected) return { alreadyConnected: true };
-    return this.request("account/login/start", {
+    const params = {
       type: "chatgpt",
       useHostedLoginSuccessPage: true,
       appBrand: "chatgpt",
-    });
+    };
+
+    const startLogin = async () => {
+      await this.start();
+      return this.request("account/login/start", params, LOGIN_START_TIMEOUT_MS);
+    };
+
+    try {
+      return await startLogin();
+    } catch (error) {
+      if (error?.code !== "CODEX_REQUEST_TIMEOUT") throw error;
+      await this.stop();
+      return startLogin();
+    }
   }
 
   async rateLimits() {
@@ -324,7 +335,7 @@ export class CodexClient extends EventEmitter {
     });
     const models = normalizeModelCatalog(result);
     if (!models.length) {
-      throw new Error("当前 Codex 账户没有可用的 GPT-5.6 Sol、Terra 或 Luna 模型");
+      throw new Error("当前 Codex 客户端没有提供 GPT-5.6 Luna 模型");
     }
     this.modelCache = models;
     this.modelCacheAt = Date.now();
@@ -333,16 +344,9 @@ export class CodexClient extends EventEmitter {
 
   async #validatedSelection({ model, effort } = {}) {
     const models = await this.models();
-    const selected = models.find((item) => item.id === model)
-      ?? models.find((item) => item.isDefault)
-      ?? models[0];
-    if (model && selected.id !== model) throw new Error(`模型 ${model} 当前不可用`);
-
-    const selectedEffort = effort ?? selected.defaultEffort;
-    if (!selectedEffort || !selected.supportedEfforts.includes(selectedEffort)) {
-      throw new Error(`${selected.displayName} 不支持思考强度 ${selectedEffort || "未知"}`);
-    }
-    return { model: selected.id, effort: selectedEffort };
+    const selection = fixedReadingSelection(models);
+    if (!selection) throw new Error("当前 Codex 无法使用 GPT-5.6 Luna max，请检查 Codex 登录与模型支持情况");
+    return selection;
   }
 
   async startThread({ contextDir, title, model }) {
@@ -385,13 +389,19 @@ export class CodexClient extends EventEmitter {
     prompt,
     selectedText,
     pageImagePath,
+    pageImages = [],
     model,
     effort,
   }) {
     await this.start();
     const selection = await this.#validatedSelection({ model, effort });
     const input = [{ type: "text", text: prompt, text_elements: [] }];
-    if (pageImagePath) input.push({ type: "localImage", path: pageImagePath });
+    if (pageImages.length) {
+      for (const image of pageImages.slice(0,3)) {
+        input.push({ type: "text", text: `原文页图：论文 ID ${image.paperId}，PDF 第 ${image.page} 页。仅此图属于该页。`, text_elements: [] });
+        input.push({ type: "localImage", path: image.path });
+      }
+    } else if (pageImagePath) input.push({ type: "localImage", path: pageImagePath });
 
     const additionalContext = {};
     for (const entry of entries) {

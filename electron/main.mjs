@@ -17,16 +17,26 @@ import { CodexClient } from "./codex-client.mjs";
 import {
   downloadArxivPaper,
   loadLibrary,
+  recoverLibrary,
+  flushLibraryWrites,
   prepareConversationContext,
   prepareRecommendationPreview,
   readPdfFile,
+  manageOriginal,
+  reopenManagedPdf,
+  readPaperIndex,
+  cachedPageImage,
   saveRecommendationThumbnail,
   saveLibrary,
   savePageImage,
   savePaperContext,
 } from "./paper-services.mjs";
-import { fetchRecommendations } from "./recommendations.mjs";
+import { createRecommendationService } from "./recommendation-cache.mjs";
+import { createDownloadJobs } from "./download-jobs.mjs";
 import { windowsSystemFetch } from "./windows-fetch.mjs";
+import { validateConversationPapers } from "./conversations.mjs";
+import { createPaperSearch } from "./paper-search.mjs";
+import { createPaperArchive, defaultArchiveDirectory } from "./paper-archive.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APP_ID = "io.github.siik7.paperocean";
@@ -40,9 +50,20 @@ const IDEAL_WINDOW_WIDTH = 1680;
 const IDEAL_WINDOW_HEIGHT = 980;
 const codex = new CodexClient();
 const localMedia = new Map();
+const closeRequests = new WeakMap();
+const downloadJobs = createDownloadJobs();
+const primaryInstance = app.requestSingleInstanceLock();
+if (!primaryInstance) app.quit();
+app.on("second-instance", () => {
+  const existing = windows()[0];
+  if (existing?.isMinimized()) existing.restore();
+  existing?.focus();
+});
 const systemFetch = process.platform === "win32"
   ? windowsSystemFetch
   : (url, options) => net.fetch(url, options);
+const paperSearch = createPaperSearch({ fetcher: systemFetch });
+let paperArchive;
 
 protocol.registerSchemesAsPrivileged([{
   scheme: "paper-ocean",
@@ -145,6 +166,29 @@ function createWindow(resolvedTheme = nativeTheme.shouldUseDarkColors ? "dark" :
 
   let chromeReady = false;
   let rendererReady = false;
+  const closing = { allowed: false, pending: false, timer: undefined };
+  closeRequests.set(window, closing);
+  window.on("close", (event) => {
+    if (closing.allowed || !rendererReady) return;
+    event.preventDefault();
+    if (closing.pending) return;
+    closing.pending = true;
+    window.webContents.send("library:before-close");
+    closing.timer = setTimeout(async () => {
+      if (window.isDestroyed() || !closing.pending) return;
+      closing.pending = false;
+      const result = await dialog.showMessageBox(window, {
+        type: "warning", title: "仍在等待保存", message: "阅读窗口暂时没有完成保存。",
+        detail: "可以返回阅读后重试。直接关闭会丢失尚未保存的改动，已保存的资料会保留。",
+        buttons: ["返回阅读", "直接关闭"], defaultId: 0, cancelId: 0,
+      });
+      if (result.response === 1 && !window.isDestroyed()) {
+        closing.allowed = true;
+        window.destroy();
+      }
+    }, 15_000);
+  });
+  window.once("closed", () => clearTimeout(closing.timer));
   const revealWindow = () => {
     if (chromeReady && rendererReady && !window.isDestroyed()) window.show();
   };
@@ -292,6 +336,13 @@ function checkedCodexInput(input, { image = false } = {}) {
   if (image && input.pageImagePath) {
     result.pageImagePath = assertWithin(userDataPath("papers"), input.pageImagePath, "页面图片");
   }
+  if (image && Array.isArray(input.pageImages)) result.pageImages = input.pageImages.slice(0, 3).map((item) => {
+    const filePath = assertWithin(userDataPath("papers"), item.path, "页面图片");
+    const page = Number(item.page);
+    const paperId = String(item.paperId || "");
+    if (!Number.isInteger(page) || page < 1 || page > 10_000 || path.basename(filePath) !== `evidence-v1-page-${page}.png` || path.basename(path.dirname(filePath)) !== paperId) throw new Error("页图与论文证据不匹配");
+    return { path: filePath, paperId, page };
+  });
   if (typeof input.selectedText === "string" && input.selectedText.trim()) {
     result.selectedText = input.selectedText.slice(0, 20_000);
   } else {
@@ -301,29 +352,59 @@ function checkedCodexInput(input, { image = false } = {}) {
 }
 
 function registerIpc() {
-  ipcMain.handle("paper:open", async () => {
+  paperArchive = createPaperArchive({
+    directory: defaultArchiveDirectory(), metadataFile: userDataPath("paper-archive.json"),
+    sourceForPaper: async (paper) => {
+      const managed = userDataPath("originals", `${paper.id}.pdf`);
+      return existsSync(managed) ? managed : paper.path;
+    },
+    textForPaper: async (paper) => ((await readPaperIndex(app.getPath("userData"), paper.id)) || []).slice(0, 3).map(page => page.text).join("\n"),
+  });
+  const syncArchive = async () => { await paperArchive.schedule(await loadLibrary(userDataPath("library.json")), true); return paperArchive.status(); };
+  ipcMain.handle("papers:search", (_event, query) => paperSearch.search(query));
+  ipcMain.handle("papers:resolve-suggestion", (_event, id) => paperSearch.resolve(id));
+  ipcMain.handle("archive:status", () => paperArchive.status());
+  ipcMain.handle("archive:retry", syncArchive);
+  ipcMain.handle("archive:set-category", async (_event, { paperId, category }) => {
+    await paperArchive.schedule(await loadLibrary(userDataPath("library.json")));
+    return paperArchive.setCategory(paperId, category);
+  });
+  ipcMain.handle("archive:open-folder", async () => {
+    const directory = defaultArchiveDirectory();
+    await fs.mkdir(directory, { recursive: true });
+    const error = await shell.openPath(directory);
+    if (error) throw new Error(error);
+  });
+  const withPageIndex = async (opened) => ({ ...opened, cachedPages: await readPaperIndex(app.getPath("userData"), opened.id) });
+  ipcMain.handle("paper:open", async (_event, expectedId) => {
     const result = await dialog.showOpenDialog({
       title: "选择论文 PDF",
       properties: ["openFile"],
       filters: [{ name: "PDF 论文", extensions: ["pdf"] }],
     });
     if (result.canceled || !result.filePaths[0]) return null;
-    return readPdfFile(result.filePaths[0]);
+    const opened = await readPdfFile(result.filePaths[0]);
+    if (expectedId && opened.id !== expectedId) throw new Error("所选 PDF 与原论文版本不一致。已有讨论和笔记未变更；若是新版，请使用本地 PDF 另行导入。");
+    return withPageIndex(await manageOriginal(app.getPath("userData"), opened));
   });
 
-  ipcMain.handle("paper:reopen", (_event, filePath) => readPdfFile(filePath));
-  ipcMain.handle("paper:open-url", (_event, url) => (
-    downloadArxivPaper(url, userDataPath("imports"), systemFetch)
-  ));
+  ipcMain.handle("paper:reopen", async (_event, filePath, expectedId) => withPageIndex(await reopenManagedPdf(app.getPath("userData"), filePath, expectedId)));
+  ipcMain.handle("paper:open-url", async (_event, url, requestId) => downloadJobs.run(requestId, url, async (options) => (
+    withPageIndex(await manageOriginal(app.getPath("userData"), await downloadArxivPaper(url, userDataPath("imports"), systemFetch, options)))
+  )));
+  ipcMain.handle("paper:download-status", (_event, id) => downloadJobs.status(id));
+  ipcMain.handle("paper:download-cancel", (_event, id) => downloadJobs.cancel(id));
   ipcMain.handle("paper:save-context", (_event, input) => (
     savePaperContext(app.getPath("userData"), input)
   ));
   ipcMain.handle("paper:save-page-image", (_event, input) => (
     savePageImage(app.getPath("userData"), input)
   ));
-  ipcMain.handle("paper:prepare-conversation", (_event, input) => (
-    prepareConversationContext(app.getPath("userData"), input)
-  ));
+  ipcMain.handle("paper:cached-page-image", (_event, input) => cachedPageImage(app.getPath("userData"), input.paperId, input.page));
+  ipcMain.handle("paper:prepare-conversation", async (_event, input) => {
+    validateConversationPapers(await loadLibrary(userDataPath("library.json")), input.scopeKey, input.papers.map((paper) => paper.id));
+    return prepareConversationContext(app.getPath("userData"), input);
+  });
 
   ipcMain.handle("app:open-external", async (_event, url) => {
     const parsed = new URL(url);
@@ -332,10 +413,30 @@ function registerIpc() {
   });
   ipcMain.handle("app:set-theme", (_event, theme) => setApplicationTheme(theme));
 
-  ipcMain.handle("library:load", () => loadLibrary(userDataPath("library.json")));
-  ipcMain.handle("library:save", (_event, state) => saveLibrary(userDataPath("library.json"), state));
+  ipcMain.handle("library:load", async () => { const state = await loadLibrary(userDataPath("library.json")); void paperArchive.schedule(state); return state; });
+  ipcMain.handle("library:save", async (_event, state) => { await saveLibrary(userDataPath("library.json"), state); void paperArchive.schedule(await loadLibrary(userDataPath("library.json"))); });
+  ipcMain.handle("library:recover", async () => { const state = await recoverLibrary(userDataPath("library.json")); void paperArchive.schedule(state, true); return state; });
+  ipcMain.handle("library:finish-close", async (event, result) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    const closing = window && closeRequests.get(window);
+    if (!window || !closing?.pending) return;
+    clearTimeout(closing.timer);
+    try {
+      if (result?.saved !== true) throw new Error(String(result?.error || "阅读记录尚未保存"));
+      await flushLibraryWrites(userDataPath("library.json"));
+      closing.allowed = true;
+      window.close();
+    } catch (error) {
+      closing.pending = false;
+      await dialog.showMessageBox(window, {
+        type: "error", title: "阅读记录尚未保存", message: "窗口已保留，请重试保存后关闭。",
+        detail: error instanceof Error ? error.message : String(error), buttons: ["返回阅读"],
+      });
+    }
+  });
 
-  ipcMain.handle("recommendations:fetch", (_event, input) => fetchRecommendations(input, systemFetch));
+  const recommendationService = createRecommendationService({ cacheDir: userDataPath("cache", "recommendations"), fetcher: systemFetch });
+  ipcMain.handle("recommendations:fetch", (_event, input) => recommendationService.get(input));
   ipcMain.handle("recommendations:prepare-preview", async (_event, arxivId) => {
     const result = await prepareRecommendationPreview(
       arxivId,
@@ -391,7 +492,7 @@ function registerIpc() {
   ipcMain.handle("codex:interrupt", (_event, input) => codex.interrupt(input));
 }
 
-app.whenReady().then(async () => {
+if (primaryInstance) app.whenReady().then(async () => {
   app.setAppUserModelId(APP_ID);
   nativeTheme.themeSource = "system";
   registerLocalMediaProtocol();
@@ -407,7 +508,13 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on("window-all-closed", () => {
-  codex.stop().catch(() => undefined);
+app.on("before-quit", (event) => {
+  if (!downloadJobs.hasActive()) return;
+  event.preventDefault();
+  void downloadJobs.close().finally(() => app.quit());
+});
+
+app.on("window-all-closed", async () => {
+  await Promise.allSettled([codex.stop(), downloadJobs.close(), paperArchive?.flush()]);
   if (process.platform !== "darwin") app.quit();
 });

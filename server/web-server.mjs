@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, promises as fs } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import path from "node:path";
@@ -8,7 +8,11 @@ import { CodexClient } from "../electron/codex-client.mjs";
 import {
   downloadArxivPaper,
   importPdfBuffer,
+  readPaperIndex,
+  cachedPageImage,
   loadLibrary,
+  recoverLibrary,
+  flushLibraryWrites,
   prepareConversationContext,
   prepareRecommendationPreview,
   saveLibrary,
@@ -17,7 +21,14 @@ import {
   saveRecommendationThumbnail,
 } from "../electron/paper-services.mjs";
 import { fetchRecommendations } from "../electron/recommendations.mjs";
+import { createRecommendationService } from "../electron/recommendation-cache.mjs";
+import { createDownloadJobs } from "../electron/download-jobs.mjs";
+import { createPaperSearch } from "../electron/paper-search.mjs";
+import { createPaperArchive, defaultArchiveDirectory } from "../electron/paper-archive.mjs";
 import { windowsSystemFetch } from "../electron/windows-fetch.mjs";
+import { normalizeReadingState, normalizeReadingPosition } from "../electron/reading-state.mjs";
+import { paperMetadata } from "../electron/paper-metadata.mjs";
+import { isConversationKey, normalizeConversations, validateConversationPapers } from "../electron/conversations.mjs";
 
 const HOST = "127.0.0.1";
 const DEFAULT_PORT = 5173;
@@ -28,7 +39,7 @@ const EVENT_BUFFER_SIZE = 500;
 const PAPER_HANDLE_PATTERN = /^paper:([a-f0-9]{24})$/;
 const CONTEXT_HANDLE_PATTERN = /^context:([a-f0-9]{24})$/;
 const THREAD_HANDLE_PATTERN = /^thread:[A-Za-z0-9_-]{32}$/;
-const ALLOWED_MODELS = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+const ALLOWED_MODELS = new Set(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
 const ALLOWED_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
 const OUTBOUND_HOSTS = new Set([
   "arxiv.org",
@@ -58,13 +69,13 @@ function cleanCodexId(value, label = "Codex ID") {
 
 function cleanModel(value) {
   const model = String(value || "");
-  if (!ALLOWED_MODELS.has(model)) throw httpError(400, "模型无效");
+  if (model !== "gpt-5.6-luna") throw httpError(400, "阅读模型固定为 GPT-5.6 Luna");
   return model;
 }
 
 function cleanEffort(value) {
   const effort = String(value || "");
-  if (!ALLOWED_EFFORTS.has(effort)) throw httpError(400, "思考强度无效");
+  if (effort !== "max") throw httpError(400, "阅读思考强度固定为 max");
   return effort;
 }
 
@@ -90,10 +101,8 @@ function contextIdFromHandle(value) {
 
 function cleanScopeKey(value) {
   const scopeKey = String(value || "");
-  if (scopeKey === "all") return scopeKey;
-  const match = scopeKey.match(/^paper:([a-f0-9]{24})$/);
-  if (!match) throw httpError(400, "对话范围无效");
-  return `paper:${match[1]}`;
+  if (!isConversationKey(scopeKey)) throw httpError(400, "对话范围无效");
+  return scopeKey;
 }
 
 function cleanText(value, maximum, fallback = "") {
@@ -191,13 +200,17 @@ function publicAccount(account) {
   };
 }
 
-function normalizeLibrary(state, knownThreadHandles = new Set()) {
+function normalizeLibrary(state) {
+  if (!state || typeof state !== "object" || !Array.isArray(state.papers)) throw httpError(400, "资料库快照缺少论文清单，未覆盖原记录");
+  for (const key of ["notes", "highlights"]) {
+    if (state[key] !== undefined && (!Array.isArray(state[key]) || state[key].some((item) => !item || typeof item !== "object" || typeof item.id !== "string"))) throw httpError(400, "笔记或高亮格式不完整，未覆盖原记录");
+  }
   const value = state && typeof state === "object" ? state : {};
   const rawPapers = Array.isArray(value.papers) ? value.papers : [];
-  const papers = rawPapers.slice(0, 300).flatMap((paper) => {
+  const papers = rawPapers.flatMap((paper) => {
     try {
       const id = cleanPaperId(paper?.id);
-      if (paper?.path !== paperHandle(id)) return [];
+      if (paper?.path !== paperHandle(id)) throw new Error("论文文件句柄无效");
       const paperDir = paper?.paperDir === contextHandle(id) ? contextHandle(id) : undefined;
       return [{
         id,
@@ -205,19 +218,21 @@ function normalizeLibrary(state, knownThreadHandles = new Set()) {
         path: paperHandle(id),
         sourceUrl: cleanText(paper?.sourceUrl, 2_000) || undefined,
         arxivId: cleanText(paper?.arxivId, 80) || undefined,
+        ...paperMetadata({ ...paper, managedOriginal: true }),
         title: cleanText(paper?.title, 2_000, paper?.name || id),
         abstract: cleanText(paper?.abstract, 50_000) || undefined,
         pageCount: Number.isInteger(paper?.pageCount) && paper.pageCount > 0
           ? Math.min(paper.pageCount, MAX_PAGES)
           : undefined,
         paperDir,
+        readingPosition: normalizeReadingPosition(paper?.readingPosition),
         lastPage: Number.isInteger(paper?.lastPage) && paper.lastPage > 0
           ? Math.min(paper.lastPage, MAX_PAGES)
           : undefined,
         openedAt: Number.isFinite(paper?.openedAt) ? Number(paper.openedAt) : Date.now(),
       }];
     } catch {
-      return [];
+      throw httpError(400, "资料库含无效的论文记录，未丢弃或覆盖原数据。请保留原文件后检查记录。");
     }
   });
   const validPaperIds = new Set(papers.map((paper) => paper.id));
@@ -226,19 +241,19 @@ function normalizeLibrary(state, knownThreadHandles = new Set()) {
     .slice(0, 100);
   const messagesByScope = value.messagesByScope && typeof value.messagesByScope === "object"
     ? Object.fromEntries(Object.entries(value.messagesByScope).filter(([key, messages]) => (
-      (key === "all" || /^paper:[a-f0-9]{24}$/.test(key)) && Array.isArray(messages)
+      isConversationKey(key) && Array.isArray(messages)
     )))
     : {};
   const threadsByScope = value.threadsByScope && typeof value.threadsByScope === "object"
     ? Object.fromEntries(Object.entries(value.threadsByScope).filter(([key, handle]) => (
-      (key === "all" || /^paper:[a-f0-9]{24}$/.test(key))
+      isConversationKey(key)
       && typeof handle === "string"
-      && knownThreadHandles.has(handle)
+      && THREAD_HANDLE_PATTERN.test(handle)
     )))
     : {};
   const aiSettingsByScope = value.aiSettingsByScope && typeof value.aiSettingsByScope === "object"
     ? Object.fromEntries(Object.entries(value.aiSettingsByScope).filter(([key, selection]) => (
-      (key === "all" || /^paper:[a-f0-9]{24}$/.test(key))
+      isConversationKey(key)
       && selection
       && typeof selection === "object"
       && ALLOWED_MODELS.has(selection.model)
@@ -247,11 +262,14 @@ function normalizeLibrary(state, knownThreadHandles = new Set()) {
     : {};
   return {
     papers,
+    ...normalizeReadingState(value),
+    conversations: normalizeConversations({ ...value, papers, messagesByScope }),
     messagesByScope,
     threadsByScope,
     aiSettingsByScope,
     openPaperIds,
     lastPaperId: validPaperIds.has(value.lastPaperId) ? value.lastPaperId : openPaperIds[0],
+    lastScopeKey: isConversationKey(value.lastScopeKey) ? value.lastScopeKey : undefined,
   };
 }
 
@@ -283,33 +301,21 @@ async function writeJsonAtomic(filePath, value) {
 }
 
 async function persistPdf(sourcePath, targetPath) {
-  await fs.mkdir(path.dirname(targetPath), { recursive: true });
-  const temporary = `${targetPath}.${randomBytes(8).toString("hex")}.part`;
-  try {
-    await fs.copyFile(sourcePath, temporary);
-    const stat = await fs.stat(temporary);
-    if (!stat.isFile() || stat.size <= 4 || stat.size > MAX_PDF_BYTES) throw httpError(400, "PDF 文件大小无效");
-    const descriptor = await fs.open(temporary, "r");
-    try {
-      const magic = Buffer.alloc(4);
-      await descriptor.read(magic, 0, 4, 0);
-      if (magic.toString() !== "%PDF") throw httpError(400, "所选文件不是有效 PDF");
-    } finally {
-      await descriptor.close();
-    }
-    await fs.rm(targetPath, { force: true }).catch(() => undefined);
-    await fs.rename(temporary, targetPath);
-  } finally {
-    await fs.rm(temporary, { force: true }).catch(() => undefined);
-  }
+  const stat = await fs.stat(sourcePath);
+  if (!stat.isFile() || stat.size <= 4 || stat.size > MAX_PDF_BYTES) throw httpError(400, "PDF 文件大小无效");
+  return persistPdfBuffer(await fs.readFile(sourcePath), targetPath);
 }
 
 async function persistPdfBuffer(buffer, targetPath) {
+  if (buffer.length > MAX_PDF_BYTES || buffer.subarray(0, 4).toString() !== "%PDF" || createHash("sha256").update(buffer).digest("hex").slice(0, 24) !== path.basename(targetPath, ".pdf")) throw httpError(400, "原件内容校验失败");
   await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  let existing;
+  try { existing = await fs.readFile(targetPath); } catch (error) { if (error.code !== "ENOENT") throw error; }
+  if (existing?.equals(buffer)) return;
+  if (existing) await fs.copyFile(targetPath, `${targetPath}.before-repair-${randomBytes(8).toString("hex")}`);
   const temporary = `${targetPath}.${randomBytes(8).toString("hex")}.part`;
   try {
-    await fs.writeFile(temporary, buffer);
-    await fs.rm(targetPath, { force: true }).catch(() => undefined);
+    await fs.writeFile(temporary, buffer, { flag: "wx" });
     await fs.rename(temporary, targetPath);
   } finally {
     await fs.rm(temporary, { force: true }).catch(() => undefined);
@@ -324,6 +330,7 @@ export async function createPaperOceanWebServer({
   codex = new CodexClient(),
   viteFactory = createViteServer,
   recommendationsFetcher = fetchRecommendations,
+  archiveDirectory = defaultArchiveDirectory(),
 } = {}) {
   if (!Number.isInteger(port) || port < 1024 || port > 65_535) throw new Error("Web 端口无效");
   const safeFetch = (implementation, input, options) => (
@@ -352,7 +359,18 @@ export async function createPaperOceanWebServer({
   const libraryPdfsDir = path.join(resolvedDataDir, "library-pdfs");
   const thumbnailsDir = path.join(resolvedDataDir, "cache", "recommendation-thumbnails");
   const libraryPath = path.join(resolvedDataDir, "library.json");
+  const paperSearch = createPaperSearch({ fetcher: networkFetch });
+  const paperArchive = createPaperArchive({
+    directory: archiveDirectory, metadataFile: path.join(resolvedDataDir, "paper-archive.json"),
+    sourceForPaper: async (paper) => {
+      const file = path.join(libraryPdfsDir, `${cleanPaperId(paper.id)}.pdf`);
+      await assertRealFileWithin(resolvedDataDir, file); return file;
+    },
+    textForPaper: async (paper) => ((await readPaperIndex(resolvedDataDir, paper.id)) || []).slice(0, 3).map(page => page.text).join("\n"),
+  });
   const threadMappingsPath = path.join(resolvedDataDir, "thread-handles.json");
+  const downloadJobs = createDownloadJobs();
+  const recommendationService = createRecommendationService({ cacheDir: path.join(resolvedDataDir, "cache", "recommendations"), fetcher: networkFetch, load: recommendationsFetcher });
   await Promise.all([
     fs.mkdir(importsDir, { recursive: true }),
     fs.mkdir(libraryPdfsDir, { recursive: true }),
@@ -432,7 +450,7 @@ export async function createPaperOceanWebServer({
     const targetPath = pdfPathForId(id);
     if (buffer) await persistPdfBuffer(buffer, targetPath);
     else if (path.resolve(opened.path) !== path.resolve(targetPath)) await persistPdf(opened.path, targetPath);
-    return { ...opened, path: paperHandle(id) };
+    return { ...opened, path: paperHandle(id), managedOriginal: true, cachedPages: await readPaperIndex(resolvedDataDir, id) };
   };
 
   const translateEvent = (event) => {
@@ -505,7 +523,7 @@ export async function createPaperOceanWebServer({
     if (html) {
       response.setHeader(
         "Content-Security-Policy",
-        `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self' ws://${allowedHost} ws://${localHostAlias}; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`,
+        `default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self' ws://${allowedHost} ws://${localHostAlias}; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`,
       );
     }
   };
@@ -620,7 +638,7 @@ export async function createPaperOceanWebServer({
         "Set-Cookie",
         `paper_ocean_session=${sessionToken}; Path=/; HttpOnly; SameSite=Strict`,
       );
-      return sendJson(response, { ready: true });
+      return sendJson(response, { ready: true, csrfToken });
     }
     if (method === "GET" && pathname === "/api/events") {
       if (!String(request.headers.cookie || "").split(/;\s*/).includes(`paper_ocean_session=${sessionToken}`)) {
@@ -646,15 +664,51 @@ export async function createPaperOceanWebServer({
       return serveMedia(request, response, pathname);
     }
 
+    if (method === "POST" && pathname === "/api/papers/search") {
+      const input = await readJson(request, 2_000); return sendJson(response, await paperSearch.search(input.query));
+    }
+    if (method === "POST" && pathname === "/api/papers/resolve-suggestion") {
+      const input = await readJson(request, 2_000); return sendJson(response, await paperSearch.resolve(input.id));
+    }
+    if (method === "GET" && pathname === "/api/archive") return sendJson(response, await paperArchive.status());
+    if (method === "POST" && pathname === "/api/archive/retry") {
+      await readJson(request, 1_000); await paperArchive.schedule(await loadLibrary(libraryPath), true); return sendJson(response, await paperArchive.status());
+    }
+    if (method === "POST" && pathname === "/api/archive/category") {
+      const input = await readJson(request, 2_000); await paperArchive.schedule(await loadLibrary(libraryPath));
+      return sendJson(response, await paperArchive.setCategory(cleanPaperId(input.paperId), input.category));
+    }
     if (method === "GET" && pathname === "/api/library") {
-      const loaded = await loadLibrary(libraryPath);
-      return sendJson(response, normalizeLibrary(loaded, new Set(threadHandles.keys())));
+      const loaded = await loadLibrary(libraryPath, { withRevision: true });
+      void paperArchive.schedule(loaded);
+      return sendJson(response, { ...normalizeLibrary(loaded), _revision: loaded._revision });
     }
     if (method === "PUT" && pathname === "/api/library") {
-      const state = normalizeLibrary(await readJson(request, 8 * 1024 * 1024), new Set(threadHandles.keys()));
-      librarySave = librarySave.catch(() => undefined).then(() => saveLibrary(libraryPath, state));
-      await librarySave;
-      return sendJson(response, { saved: true });
+      const input = await readJson(request, 64 * 1024 * 1024);
+      const state = normalizeLibrary(input);
+      const saving = librarySave.then(async () => {
+        const current = await loadLibrary(libraryPath, { withRevision: true });
+        const identicalRetry = createHash("sha256").update(JSON.stringify(state)).digest("hex") === current._revision;
+        if (typeof input._revision !== "string" || (input._revision !== current._revision && !identicalRetry)) throw httpError(409, "资料库已被其他页面更新，本页改动仍保留。请先导出未保存副本，再重新打开页面核对合并。");
+        await saveLibrary(libraryPath, state);
+        void paperArchive.schedule(state);
+        return (await loadLibrary(libraryPath, { withRevision: true }))._revision;
+      });
+      // Report failure to this request while leaving the drain queue usable.
+      librarySave = saving.catch(() => undefined);
+      const revision = await saving;
+      return sendJson(response, { saved: true, _revision: revision });
+    }
+    if (method === "POST" && pathname === "/api/library/recover") {
+      await readJson(request, 1_000);
+      const recovering = librarySave.then(async () => {
+        await recoverLibrary(libraryPath);
+        return loadLibrary(libraryPath, { withRevision: true });
+      });
+      librarySave = recovering.then(() => undefined, () => undefined);
+      const loaded = await recovering;
+      void paperArchive.schedule(loaded, true);
+      return sendJson(response, { ...normalizeLibrary(loaded), _revision: loaded._revision });
     }
     if (method === "POST" && pathname === "/api/papers/import") {
       if (!String(request.headers["content-type"] || "").toLowerCase().startsWith("application/pdf")) {
@@ -668,8 +722,10 @@ export async function createPaperOceanWebServer({
       }
       filename = filename.replace(/[\\/\r\n\0]/g, "_").slice(0, 160) || "local-paper.pdf";
       const body = await readBody(request, MAX_PDF_BYTES);
+      const expectedId = request.headers["x-paper-ocean-expected-id"];
+      if (expectedId && createHash("sha256").update(body).digest("hex").slice(0, 24) !== expectedId) throw httpError(409, "所选 PDF 与原论文版本不一致，已有讨论和笔记未变更。若是新版，请另行导入。");
       const opened = await saveUploadedPdf(body, filename);
-      return sendJson(response, { ...opened, path: paperHandle(opened.id) });
+      return sendJson(response, { ...opened, path: paperHandle(opened.id), managedOriginal: true, cachedPages: await readPaperIndex(resolvedDataDir, opened.id) });
     }
     if (method === "POST" && pathname === "/api/papers/reopen") {
       const { handle } = await readJson(request, 10_000);
@@ -678,12 +734,21 @@ export async function createPaperOceanWebServer({
       const buffer = await fs.readFile(filePath).catch(() => { throw httpError(404, "论文文件不存在"); });
       const opened = await importPdfBuffer(buffer, { name: `${id}.pdf`, path: filePath });
       if (opened.id !== id) throw httpError(409, "论文文件校验失败，请重新导入");
-      return sendJson(response, { ...opened, path: paperHandle(id) });
+      return sendJson(response, { ...opened, path: paperHandle(id), managedOriginal: true, cachedPages: await readPaperIndex(resolvedDataDir, id) });
     }
     if (method === "POST" && pathname === "/api/papers/open-url") {
-      const { value } = await readJson(request, 20_000);
-      const opened = await downloadArxivPaper(cleanText(value, 2_000), importsDir, networkFetch);
-      return sendJson(response, await browserPaper(opened));
+      const { value, requestId } = await readJson(request, 20_000);
+      const source = cleanText(value, 2_000);
+      return sendJson(response, await downloadJobs.run(requestId, source, async (options) => browserPaper(await downloadArxivPaper(source, importsDir, networkFetch, options))));
+    }
+    if (method === "POST" && pathname === "/api/papers/download-status") {
+      const { id } = await readJson(request, 1000);
+      return sendJson(response, downloadJobs.status(id));
+    }
+    if (method === "POST" && pathname === "/api/papers/download-cancel") {
+      const { id } = await readJson(request, 1000);
+      downloadJobs.cancel(id);
+      return sendJson(response, { cancelled: true });
     }
     if (method === "POST" && pathname === "/api/papers/context") {
       const { paper, pages } = await readJson(request, 20 * 1024 * 1024);
@@ -726,11 +791,20 @@ export async function createPaperOceanWebServer({
         dataUrl: cleanText(input.dataUrl, 8 * 1024 * 1024),
       });
       const handle = issueRandomHandle("image:");
-      pageImageHandles.set(handle, imagePath);
+      pageImageHandles.set(handle, { path: imagePath, paperId: id, page });
+      return sendJson(response, { handle });
+    }
+    if (method === "POST" && pathname === "/api/papers/cached-page-image") {
+      const { paperId, page } = await readJson(request, 10_000);
+      const id = cleanPaperId(paperId);
+      const imagePath = await cachedPageImage(resolvedDataDir, id, page);
+      if (!imagePath) return sendJson(response, {});
+      const handle = issueRandomHandle("image:");
+      pageImageHandles.set(handle, { path: imagePath, paperId: id, page });
       return sendJson(response, { handle });
     }
     if (method === "POST" && pathname === "/api/conversations/prepare") {
-      const { scopeKey, papers } = await readJson(request, 2 * 1024 * 1024);
+      const { scopeKey, papers, question, currentPaperId, currentPage } = await readJson(request, 2 * 1024 * 1024);
       const safeScope = cleanScopeKey(scopeKey);
       const safePapers = [];
       for (const paper of (Array.isArray(papers) ? papers : []).slice(0, 30)) {
@@ -746,12 +820,16 @@ export async function createPaperOceanWebServer({
         });
       }
       if (!safePapers.length) throw httpError(400, "对话范围中没有论文");
-      if (safeScope !== "all" && !safePapers.some((paper) => `paper:${paper.id}` === safeScope)) {
+      if (safeScope.startsWith("paper:") && (safePapers.length !== 1 || `paper:${safePapers[0].id}` !== safeScope)) {
         throw httpError(400, "对话范围与论文不匹配");
       }
+      validateConversationPapers(await loadLibrary(libraryPath), safeScope, safePapers.map((paper) => paper.id));
       const prepared = await prepareConversationContext(resolvedDataDir, {
         scopeKey: safeScope,
         papers: safePapers,
+        question: cleanText(question, 100_000),
+        currentPaperId: safePapers.some((paper) => paper.id === currentPaperId) ? currentPaperId : undefined,
+        currentPage: Number.isInteger(currentPage) && currentPage > 0 && currentPage <= MAX_PAGES ? currentPage : undefined,
       });
       const handle = issueRandomHandle("conversation:");
       conversationContexts.set(handle, {
@@ -768,6 +846,7 @@ export async function createPaperOceanWebServer({
         })),
         paperCount: prepared.paperCount,
         characterCount: prepared.characterCount,
+        coverage: prepared.coverage,
       });
     }
     if (method === "GET" && pathname === "/api/codex/status") {
@@ -834,8 +913,13 @@ export async function createPaperOceanWebServer({
       const realThreadId = requireThread(input.threadId);
       const context = requireMapValue(conversationContexts, input.contextDir, "对话上下文");
       const pageImagePath = input.pageImagePath
-        ? requireMapValue(pageImageHandles, input.pageImagePath, "页面图片")
+        ? requireMapValue(pageImageHandles, input.pageImagePath, "页面图片").path
         : undefined;
+      const pageImages = (Array.isArray(input.pageImages) ? input.pageImages : []).slice(0, 3).map((item) => {
+        const image = requireMapValue(pageImageHandles, item.path, "页面图片");
+        if (!context.paperIds.includes(image.paperId) || image.paperId !== item.paperId || image.page !== item.page) throw httpError(400, "页图与论文证据不匹配");
+        return image;
+      });
       turnStarting = true;
       try {
         const result = await codex.sendTurn({
@@ -845,6 +929,7 @@ export async function createPaperOceanWebServer({
           prompt: cleanText(input.prompt, 100_000),
           selectedText: cleanText(input.selectedText, 20_000) || undefined,
           pageImagePath,
+          pageImages,
           model: cleanModel(input.model),
           effort: cleanEffort(input.effort),
         });
@@ -868,11 +953,13 @@ export async function createPaperOceanWebServer({
     }
     if (method === "POST" && pathname === "/api/recommendations") {
       const input = await readJson(request, 100_000);
-      return sendJson(response, await recommendationsFetcher({
+      return sendJson(response, await recommendationService.get({
         title: cleanText(input.title, 500),
         abstract: cleanText(input.abstract, 8_000) || undefined,
         arxivId: cleanText(input.arxivId, 80) || undefined,
-      }, networkFetch));
+        mode: input.mode,
+        refresh: input.refresh === true,
+      }));
     }
     if (method === "POST" && pathname === "/api/recommendations/preview") {
       const { arxivId } = await readJson(request, 20_000);
@@ -949,6 +1036,8 @@ export async function createPaperOceanWebServer({
     server.listen(port, HOST);
   });
   const close = async () => {
+    await downloadJobs.close();
+    await paperArchive.flush();
     clearInterval(heartbeat);
     for (const response of sseClients) response.end();
     sseClients.clear();
@@ -958,6 +1047,9 @@ export async function createPaperOceanWebServer({
     if (server.listening) {
       await new Promise((resolve) => server.close(resolve));
     }
+    await librarySave;
+    await threadMappingsSave;
+    await flushLibraryWrites(libraryPath);
   };
 
   return {

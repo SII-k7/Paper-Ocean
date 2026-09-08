@@ -4,7 +4,19 @@ import {
   calculateFitZoom,
   MAX_PDF_ZOOM,
   MIN_PDF_ZOOM,
+  pdfCanvasSize,
 } from "../src/pdf-layout.mjs";
+
+test("large and tall PDF pages keep raster allocation bounded while preserving logical zoom", () => {
+  assert.deepEqual(pdfCanvasSize(612, 792, 2), { width: 1224, height: 1584, ratio: 2 });
+  for (const [width, height] of [[2448, 3168], [1000, 100000], [100000, 100000]]) {
+    const canvas = pdfCanvasSize(width, height, 3);
+    assert.ok(canvas.width * canvas.height <= 16_000_000);
+    assert.ok(canvas.width <= 8192 && canvas.height <= 8192);
+    assert.ok(canvas.ratio > 0 && canvas.ratio <= 2);
+  }
+  assert.throws(() => pdfCanvasSize(Infinity, 1000), /无效/);
+});
 
 test("fit-width zoom uses the full reader width instead of the old 140% ceiling", () => {
   const zoom = calculateFitZoom({

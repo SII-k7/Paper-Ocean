@@ -220,6 +220,45 @@ test("conversation context is losslessly chunked and keeps external metadata unt
   }
 });
 
+test("page indexes are reusable while malformed derived caches are regenerated safely", async () => {
+  const { readPaperIndex } = await import("../electron/paper-services.mjs");
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paper-ocean-index-"));
+  try {
+    const paper = { id: "index-paper", title: "Indexed paper", path: "fixture.pdf" };
+    const pages = [{ page: 1, text: "Formula αβ and 0.37" }, { page: 2, text: "Conclusion" }];
+    const saved = await savePaperContext(root, {paper,pages});
+    assert.deepEqual(await readPaperIndex(root,paper.id),pages);
+    const first = await prepareConversationContext(root,{scopeKey:`paper:${paper.id}`,papers:[paper]});
+    const firstStat = await fs.stat(first.entries[0].path);
+    const second = await prepareConversationContext(root,{scopeKey:`paper:${paper.id}`,papers:[paper]});
+    assert.equal(first.entries[0].path,second.entries[0].path);
+    assert.equal((await fs.stat(second.entries[0].path)).mtimeMs,firstStat.mtimeMs);
+    await fs.writeFile(path.join(saved.paperDir,"pages-index.json"),"{invalid cache");
+    assert.equal(await readPaperIndex(root,paper.id),undefined);
+    assert.match(await fs.readFile(saved.contextPath,"utf8"),/0\.37/);
+    await savePaperContext(root,{paper,pages});
+    assert.deepEqual(await readPaperIndex(root,paper.id),pages);
+  } finally { await fs.rm(root,{recursive:true,force:true}); }
+});
+
+test("different retrieval requests use immutable snapshots and report incomplete evidence", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paper-ocean-budget-"));
+  try {
+    const paper = { id:"budget-paper",title:"Budget test",path:"fixture.pdf" };
+    const pages = Array.from({length:40},(_,i)=>({page:i+1,text:`${i===19?"ablation result 0.37":i===29?"latency result 18ms":"background"} ${"plain text ".repeat(150)}`}));
+    await savePaperContext(root,{paper,pages});
+    const first = await prepareConversationContext(root,{scopeKey:"all",papers:[paper],question:"ablation",budgetBytes:6000});
+    const before = await Promise.all(first.entries.map((entry)=>fs.readFile(entry.path,"utf8")));
+    const second = await prepareConversationContext(root,{scopeKey:"all",papers:[paper],question:"latency",budgetBytes:6000});
+    assert.equal(first.coverage.complete,false);
+    assert.ok(first.coverage.papers[0].pages.includes(20));
+    assert.ok(second.coverage.papers[0].pages.includes(30));
+    assert.notEqual(first.entries[0].path,second.entries[0].path);
+    assert.deepEqual(await Promise.all(first.entries.map((entry)=>fs.readFile(entry.path,"utf8"))),before);
+    assert.ok(before.reduce((sum,text)=>sum+Buffer.byteLength(text),0)<=6000);
+  } finally { await fs.rm(root,{recursive:true,force:true}); }
+});
+
 test("recommendation preview shares the cached arXiv PDF with the reader", async () => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paper-ocean-preview-test-"));
   const importsDir = path.join(tempRoot, "imports");
@@ -305,8 +344,9 @@ test("opening a paper still accepts a PDF above the preview limit and below 100 
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paper-ocean-open-limit-test-"));
   const importsDir = path.join(tempRoot, "imports");
   const openablePdf = Buffer.concat([
-    Buffer.from("%PDF"),
-    Buffer.alloc((26 * 1024 * 1024) - 4),
+    Buffer.from("%PDF-1.7\n"),
+    Buffer.alloc((26 * 1024 * 1024) - 15),
+    Buffer.from("%%EOF\n"),
   ]);
   let pdfGets = 0;
   const fetcher = async (url) => {

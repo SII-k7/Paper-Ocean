@@ -15,7 +15,7 @@ const MODEL_ORDER: CodexModel["id"][] = [
   "gpt-5.6-luna",
 ];
 
-const MODEL_LABELS: Record<CodexModel["id"], string> = {
+const MODEL_LABELS: Partial<Record<CodexModel["id"], string>> = {
   "gpt-5.6-sol": "Sol",
   "gpt-5.6-terra": "Terra",
   "gpt-5.6-luna": "Luna",

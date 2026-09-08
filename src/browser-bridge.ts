@@ -8,11 +8,14 @@ import type {
   PaperRecord,
   PdfPageIndex,
   RateLimitInfo,
-  Recommendation,
+  RecommendationResult,
+  DownloadProgress,
   RecommendationPreview,
+  PaperSearchResult,
+  PaperArchiveStatus,
 } from "./types";
 
-const CSRF_TOKEN = import.meta.env.VITE_PAPER_OCEAN_CSRF;
+let csrfToken = import.meta.env.VITE_PAPER_OCEAN_CSRF;
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const MAX_PDF_BYTES = 100 * 1024 * 1024;
 
@@ -24,6 +27,7 @@ type ApiOptions = {
 };
 
 let sessionPromise: Promise<void> | undefined;
+let libraryRevision: string | undefined;
 
 function responseError(payload: unknown, fallback: string) {
   if (payload && typeof payload === "object") {
@@ -55,6 +59,8 @@ function ensureSession() {
     }).then(async (response) => {
       const payload = await parseResponse(response);
       if (!response.ok) throw new Error(responseError(payload, `本地会话初始化失败（${response.status}）`));
+      const token = (payload as { csrfToken?: unknown } | undefined)?.csrfToken;
+      if (typeof token === "string" && /^[A-Za-z0-9_-]{32}$/.test(token)) csrfToken = token;
     }).catch((error) => {
       sessionPromise = undefined;
       throw error;
@@ -63,12 +69,12 @@ function ensureSession() {
   return sessionPromise;
 }
 
-async function api<T>(pathname: string, options: ApiOptions = {}): Promise<T> {
+async function api<T>(pathname: string, options: ApiOptions = {}, retrySession = true): Promise<T> {
   await ensureSession();
   const method = options.method ?? "GET";
   const headers = new Headers(options.headers);
   headers.set("Accept", "application/json");
-  if (MUTATING_METHODS.has(method)) headers.set("X-Paper-Ocean-CSRF", CSRF_TOKEN);
+  if (MUTATING_METHODS.has(method)) headers.set("X-Paper-Ocean-CSRF", csrfToken);
 
   let body = options.body;
   if (options.json !== undefined) {
@@ -84,7 +90,16 @@ async function api<T>(pathname: string, options: ApiOptions = {}): Promise<T> {
     cache: "no-store",
   });
   const payload = await parseResponse(response);
-  if (!response.ok) throw new Error(responseError(payload, `本地服务请求失败（${response.status}）`));
+  if (!response.ok) {
+    const message = responseError(payload, `本地服务请求失败（${response.status}）`);
+    if (retrySession && response.status === 403 && ["本地会话校验失败", "本地会话已失效"].includes(message)) {
+      // Validation fails before any mutation runs. Refresh the local session
+      // once after a server restart, then retry the same unsaved snapshot.
+      sessionPromise = undefined;
+      return api<T>(pathname, options, false);
+    }
+    throw new Error(message);
+  }
   return payload as T;
 }
 
@@ -185,7 +200,15 @@ function openLoginWindow() {
 export function installBrowserBridge() {
   const bridge: Window["paperOcean"] = {
     runtime: "web",
-    openPdf: async () => {
+    searchPapers: (query) => api<PaperSearchResult>("/api/papers/search", { method: "POST", json: { query } }),
+    resolvePaperSuggestion: (id) => api<{ arxivId?: string; sourceUrl?: string }>("/api/papers/resolve-suggestion", { method: "POST", json: { id } }),
+    archive: {
+      status: () => api<PaperArchiveStatus>("/api/archive"),
+      retry: () => api<PaperArchiveStatus>("/api/archive/retry", { method: "POST", json: {} }),
+      setCategory: (paperId, category) => api<PaperArchiveStatus>("/api/archive/category", { method: "POST", json: { paperId, category } }),
+      openFolder: async () => { throw new Error("浏览器无法打开本地目录，请在文件管理器中打开显示的归档路径。"); },
+    },
+    openPdf: async (expectedPaperId) => {
       const file = await pickPdf();
       if (!file) return null;
       if (file.size > MAX_PDF_BYTES) throw new Error("PDF 不能超过 100 MB");
@@ -195,6 +218,7 @@ export function installBrowserBridge() {
         headers: {
           "Content-Type": "application/pdf",
           "X-Paper-Ocean-Filename": encodeURIComponent(file.name || "local-paper.pdf"),
+          ...(expectedPaperId ? { "X-Paper-Ocean-Expected-Id": expectedPaperId } : {}),
         },
       });
     },
@@ -202,10 +226,12 @@ export function installBrowserBridge() {
       method: "POST",
       json: { handle },
     }),
-    openUrl: (value) => api<OpenedPaper>("/api/papers/open-url", {
+    openUrl: (value, requestId) => api<OpenedPaper>("/api/papers/open-url", {
       method: "POST",
-      json: { value },
+      json: { value, requestId },
     }),
+    downloadStatus: (id) => api<DownloadProgress | null>("/api/papers/download-status", { method: "POST", json: { id } }),
+    cancelDownload: async (id) => { await api("/api/papers/download-cancel", { method: "POST", json: { id } }); },
     openExternal: async (value) => {
       const href = safeHttpsUrl(value, "外部链接");
       window.open(href, "_blank", "noopener,noreferrer");
@@ -224,6 +250,7 @@ export function installBrowserBridge() {
       });
       return result.handle;
     },
+    cachedPageImage: async (paperId, page) => (await api<{ handle?: string }>("/api/papers/cached-page-image", { method: "POST", json: { paperId, page } })).handle,
     prepareConversation: (input) => api<ConversationContext>("/api/conversations/prepare", {
       method: "POST",
       json: input,
@@ -276,7 +303,7 @@ export function installBrowserBridge() {
       },
       onEvent: subscribeToEvents,
     },
-    recommendations: (input) => api<Recommendation[]>("/api/recommendations", {
+    recommendations: (input) => api<RecommendationResult>("/api/recommendations", {
       method: "POST",
       json: input,
     }),
@@ -292,9 +319,19 @@ export function installBrowserBridge() {
       return result.imageUrl;
     },
     library: {
-      load: () => api<LibraryState>("/api/library"),
+      load: async () => {
+        const { _revision, ...state } = await api<LibraryState & { _revision: string }>("/api/library");
+        libraryRevision = _revision;
+        return state;
+      },
+      recover: async () => {
+        const { _revision, ...state } = await api<LibraryState & { _revision: string }>("/api/library/recover", { method: "POST", json: {} });
+        libraryRevision = _revision;
+        return state;
+      },
       save: async (state) => {
-        await api("/api/library", { method: "PUT", json: state });
+        const result = await api<{ _revision: string }>("/api/library", { method: "PUT", json: { ...state, _revision: libraryRevision } });
+        libraryRevision = result._revision;
       },
     },
   };

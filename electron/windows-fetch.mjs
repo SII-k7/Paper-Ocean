@@ -201,6 +201,10 @@ export async function followWindowsFetchRedirects(
 }
 
 export async function windowsSystemFetch(input, options = {}) {
+  if (options.paperOceanStream) {
+    const { windowsStreamFetch } = await import("./windows-stream-fetch.mjs");
+    return windowsStreamFetch(input, options);
+  }
   const source = typeof input === "string"
     ? input
     : input instanceof URL

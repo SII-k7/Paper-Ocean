@@ -8,6 +8,7 @@ const FIELDS = [
   "title",
   "authors",
   "year",
+  "publicationDate",
   "abstract",
   "url",
   "externalIds",
@@ -81,12 +82,7 @@ function abstractFromInvertedIndex(index) {
 }
 
 function normalizeArxivId(value) {
-  if (!value) return undefined;
-  return String(value)
-    .replace(/^ARXIV:/i, "")
-    .replace(/^https?:\/\/arxiv\.org\/(?:abs|pdf)\//i, "")
-    .replace(/\.pdf$/i, "")
-    .replace(/v\d+$/i, "");
+  return parseArxivReference(String(value || "").replace(/^ARXIV:/i, ""))?.id;
 }
 
 function arxivIdFromOpenAlex(work) {
@@ -97,19 +93,23 @@ function arxivIdFromOpenAlex(work) {
     work.primary_location?.pdf_url,
     work.best_oa_location?.landing_page_url,
     work.best_oa_location?.pdf_url,
+    ...(work.locations || []).flatMap((location) => [location.landing_page_url, location.pdf_url]),
   ];
   for (const value of locations) {
-    const match = String(value || "").match(/arxiv\.org\/(?:abs|pdf)\/([^?#]+)/i);
-    if (match) return normalizeArxivId(match[1]);
+    const id = normalizeArxivId(value);
+    if (id) return id;
   }
   return undefined;
 }
 
-function reasonForScores(relevanceScore, fameScore) {
-  if (relevanceScore >= 0.8 && fameScore >= 0.68) return "高度相关 · 近年高影响";
-  if (relevanceScore >= 0.8) return "与当前论文高度相关";
-  if (fameScore >= 0.72) return "相关方向的近年代表作";
-  return "主题与方法均较相关";
+function reasonForScores(_relevanceScore, _fameScore, relation) {
+  if (relation === "reference") return "文献数据库中的引用关系 · 追溯方法来源";
+  if (relation === "similar") return "相似论文服务返回 · 相关度优先排序";
+  return "主题相关候选 · 根据标题与摘要检索";
+}
+
+function safeUrl(value) {
+  try { const url = new URL(value); return url.protocol === "https:" && !url.username && !url.password ? url.href : undefined; } catch { return undefined; }
 }
 
 export function normalizeRecommendation(paper) {
@@ -121,15 +121,19 @@ export function normalizeRecommendation(paper) {
     title: paper.title || "Untitled paper",
     authors: (paper.authors || []).slice(0, 5).map((author) => author.name).filter(Boolean),
     year: paper.year ?? undefined,
+    publishedAt: publicationDate(paper.publicationDate) || publicationDate(String(paper.year || "")),
     abstract: paper.abstract ?? undefined,
-    url: paper.url ?? (arxivId ? `https://arxiv.org/abs/${arxivId}` : undefined),
+    url: safeUrl(paper.url) ?? (arxivId ? `https://arxiv.org/abs/${arxivId}` : undefined),
     pdfUrl: paper.openAccessPdf?.url ?? (arxivId ? `https://arxiv.org/pdf/${arxivId}` : undefined),
     arxivId,
     citationCount: paper.citationCount ?? undefined,
     relevanceScore,
     fameScore,
     score: 0.78 * relevanceScore + 0.22 * fameScore,
-    reason: reasonForScores(relevanceScore, fameScore),
+    reason: reasonForScores(relevanceScore, fameScore, paper.relation),
+    source: "Semantic Scholar",
+    sourceUrl: safeUrl(paper.url),
+    relation: paper.relation || "search",
     ...(paper._sourceRelevance !== undefined ? { _sourceRelevance: paper._sourceRelevance } : {}),
   };
 }
@@ -147,29 +151,40 @@ function normalizeOpenAlexRecommendation(work, index, count, maxRawRelevance) {
       .map((authorship) => authorship.author?.display_name)
       .filter(Boolean),
     year: work.publication_year ?? undefined,
+    publishedAt: publicationDate(work.publication_date) || publicationDate(String(work.publication_year || "")),
     abstract: abstractFromInvertedIndex(work.abstract_inverted_index),
-    url: arxivId ? `https://arxiv.org/abs/${arxivId}` : work.primary_location?.landing_page_url || work.id,
+    url: arxivId ? `https://arxiv.org/abs/${arxivId}` : safeUrl(work.primary_location?.landing_page_url) || safeUrl(work.id),
     pdfUrl: arxivId ? `https://arxiv.org/pdf/${arxivId}` : work.best_oa_location?.pdf_url || work.primary_location?.pdf_url,
     arxivId,
     citationCount: work.cited_by_count ?? 0,
     _sourceRelevance: sourceRelevance,
+    source: "OpenAlex",
+    sourceUrl: safeUrl(work.id),
+    relation: "search",
   };
 }
 
 export function rankRecommendations(input, candidates, currentYear = new Date().getFullYear()) {
   const cutoffYear = currentYear - 2;
+  const foundations = input.mode === "foundations";
   const seedTitle = normalizedTitle(input.title);
   const filtered = [];
-  const seen = new Set();
+  const seen = new Map();
 
   for (const candidate of candidates) {
-    if (!candidate?.arxivId || !candidate?.year) continue;
-    if (candidate.year < cutoffYear || candidate.year > currentYear) continue;
+    if (!candidate?.title?.trim() || candidate.title === "Untitled paper") continue;
+    if (foundations ? candidate?.relation !== "reference" || (!candidate?.arxivId && !safeUrl(candidate?.url)) : !candidate?.arxivId || !candidate?.year) continue;
+    if ((!foundations && candidate.year < cutoffYear) || candidate.year > currentYear) continue;
     if (normalizedTitle(candidate.title) === seedTitle) continue;
     if (input.arxivId && normalizeArxivId(input.arxivId) === normalizeArxivId(candidate.arxivId)) continue;
-    const key = normalizeArxivId(candidate.arxivId).toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const key = (normalizeArxivId(candidate.arxivId) || candidate.paperId || candidate.url).toLowerCase();
+    const titleKey = `title:${normalizedTitle(candidate.title)}`;
+    const existing = seen.get(key) ?? seen.get(titleKey);
+    if (existing !== undefined) {
+      if (!filtered[existing].arxivId && candidate.arxivId) filtered[existing] = candidate;
+      continue;
+    }
+    seen.set(key, filtered.length); seen.set(titleKey, filtered.length);
     filtered.push(candidate);
   }
 
@@ -187,7 +202,7 @@ export function rankRecommendations(input, candidates, currentYear = new Date().
       );
       const relevanceScore = clamp(semantic * 0.82 + lexical * 0.18);
       const age = currentYear - paper.year;
-      const notableCitations = age === 0 ? 80 : age === 1 ? 220 : 500;
+      const notableCitations = foundations ? 2000 : age === 0 ? 80 : age === 1 ? 220 : 500;
       const fameScore = clamp(Math.log1p(paper.citationCount ?? 0) / Math.log1p(notableCitations));
       const score = relevanceScore * 0.78 + fameScore * 0.22;
       return {
@@ -195,7 +210,7 @@ export function rankRecommendations(input, candidates, currentYear = new Date().
         relevanceScore,
         fameScore,
         score,
-        reason: reasonForScores(relevanceScore, fameScore),
+        reason: reasonForScores(relevanceScore, fameScore, paper.relation),
       };
     })
     .filter((paper) => paper.relevanceScore >= 0.48 && paper.score >= 0.5)
@@ -209,6 +224,19 @@ export function rankRecommendations(input, candidates, currentYear = new Date().
 }
 
 async function fetchOpenAlexRecommendations(input, fetcher) {
+  if (input.mode === "foundations") {
+    const seedUrl = new URL(OPENALEX_WORKS);
+    seedUrl.searchParams.set("search", input.title); seedUrl.searchParams.set("per-page", "5");
+    const result = await fetchJson(fetcher, seedUrl, "OpenAlex");
+    const seed = result.results?.find((work) => (input.arxivId && arxivIdFromOpenAlex(work) === normalizeArxivId(input.arxivId)) || normalizedTitle(work.display_name || work.title) === normalizedTitle(input.title));
+    const seedId = String(seed?.id || "").match(/^https:\/\/openalex\.org\/(W\d+)$/)?.[1];
+    if (!seedId) return [];
+    const referenceUrl = new URL(OPENALEX_WORKS);
+    referenceUrl.searchParams.set("filter", `cited_by:${seedId}`);
+    referenceUrl.searchParams.set("sort", "cited_by_count:desc"); referenceUrl.searchParams.set("per-page", "100");
+    const references = await fetchJson(fetcher, referenceUrl, "OpenAlex 参考文献");
+    return (references.results || []).map((work, index, works) => ({ ...normalizeOpenAlexRecommendation(work, index, works.length, 1), relation: "reference", _sourceRelevance: .85 }));
+  }
   const currentYear = new Date().getFullYear();
   const longContext = input.abstract?.trim();
   const parameter = longContext && longContext.length >= 80 ? "search.semantic" : "search";
@@ -259,13 +287,20 @@ async function resolveSeed({ title, arxivId }, fetcher) {
     `${S2_GRAPH}/paper/search?query=${encodeURIComponent(query)}&limit=5&fields=${FIELDS}`,
     fetcher,
   );
-  return result.data?.[0] ?? null;
+  return result.data?.find((paper) => normalizedTitle(paper.title) === normalizedTitle(title)) ?? null;
 }
 
 async function fetchSemanticScholarRecommendations(input, fetcher) {
   const currentYear = new Date().getFullYear();
   const seed = await resolveSeed(input, fetcher);
   let candidates = [];
+  let relation = "search";
+
+  if (input.mode === "foundations") {
+    if (!seed?.paperId) return [];
+    const references = await s2Fetch(`${S2_GRAPH}/paper/${encodeURIComponent(seed.paperId)}/references?limit=100&fields=${FIELDS}`, fetcher);
+    return (references.data || []).flatMap((item) => item.citedPaper ? [normalizeRecommendation({ ...item.citedPaper, relation: "reference", _sourceRelevance: .85 })] : []);
+  }
 
   if (seed?.paperId) {
     try {
@@ -274,6 +309,7 @@ async function fetchSemanticScholarRecommendations(input, fetcher) {
         fetcher,
       );
       candidates = result.recommendedPapers ?? [];
+      relation = "similar";
     } catch {
       candidates = [];
     }
@@ -286,10 +322,12 @@ async function fetchSemanticScholarRecommendations(input, fetcher) {
       fetcher,
     );
     candidates = result.data ?? [];
+    relation = "search";
   }
 
   return candidates.map((paper, index) => normalizeRecommendation({
     ...paper,
+    relation,
     _sourceRelevance: Math.max(0.45, 1 - index / Math.max(candidates.length * 1.35, 1)),
   }));
 }
@@ -304,7 +342,7 @@ export async function fetchRecommendations(input, fetcher = globalThis.fetch) {
     errors.push(error instanceof Error ? error.message : String(error));
   }
 
-  if (candidates.filter((paper) => paper.arxivId).length < MAX_RECOMMENDATIONS) {
+  if (rankRecommendations(input, candidates).length < MAX_RECOMMENDATIONS) {
     try {
       candidates.push(...await fetchSemanticScholarRecommendations(input, fetcher));
     } catch (error) {
@@ -316,3 +354,4 @@ export async function fetchRecommendations(input, fetcher = globalThis.fetch) {
   if (ranked.length || errors.length < 2) return ranked;
   throw new Error(`推荐服务暂时不可用：${errors.join("；")}`);
 }
+import { parseArxivReference, publicationDate } from "./paper-metadata.mjs";

@@ -1,11 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { FileText } from "lucide-react";
-import * as pdfjs from "pdfjs-dist";
-
-pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  "pdfjs-dist/build/pdf.worker.mjs",
-  import.meta.url,
-).toString();
+import { pdfjs, pdfResourceOptions } from "../pdf-runtime";
 
 type Props = {
   arxivId?: string;
@@ -67,6 +62,7 @@ function enqueuePreview<T>(generationKey: string, task: () => Promise<T>) {
 
 async function renderFirstPage(pdfUrl: string) {
   const loadingTask = pdfjs.getDocument({
+    ...pdfResourceOptions(),
     url: pdfUrl,
     disableAutoFetch: true,
     disableStream: true,

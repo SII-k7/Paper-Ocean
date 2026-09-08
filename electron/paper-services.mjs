@@ -1,6 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { normalizeReadingState, normalizeReadingPosition } from "./reading-state.mjs";
+import { normalizeConversations } from "./conversations.mjs";
+import { paperMetadata, parseArxivReference, publicationDate } from "./paper-metadata.mjs";
+import { selectContextDocuments } from "./context-selection.mjs";
+import { readLibrarySnapshot, writeLibrarySnapshot, recoverLibrarySnapshot } from "./library-store.mjs";
+import { downloadPdf } from "./pdf-download.mjs";
+export { flushLibraryWrites } from "./library-store.mjs";
 
 const MAX_PDF_BYTES = 100 * 1024 * 1024;
 const MAX_RECOMMENDATION_PREVIEW_BYTES = 25 * 1024 * 1024;
@@ -62,11 +69,12 @@ async function fetchWithRetry(fetcher, url, options, { attempts = 3, timeoutMs =
     try {
       const response = await fetcher(url, {
         ...options,
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: options?.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       });
       if (response.ok || (response.status < 500 && response.status !== 429)) return response;
       lastError = new Error(`HTTP ${response.status}`);
     } catch (error) {
+      options?.signal?.throwIfAborted();
       lastError = error;
     }
     if (attempt + 1 < attempts) await delay(600 * (attempt + 1));
@@ -99,9 +107,10 @@ function readMetaValues(html, expectedName) {
   return values;
 }
 
-async function fetchArxivPageMetadata(arxivId, fetcher) {
+async function fetchArxivPageMetadata(arxivId, fetcher, signal) {
   const response = await fetchWithRetry(fetcher, `https://arxiv.org/abs/${encodeURIComponent(arxivId)}`, {
     headers: { "User-Agent": "PaperOcean/0.2 local-reader" },
+    signal,
   }, { attempts: 2, timeoutMs: 15_000 });
   if (!response.ok) return null;
   const html = await response.text();
@@ -115,37 +124,34 @@ async function fetchArxivPageMetadata(arxivId, fetcher) {
 }
 
 export function extractArxivId(input) {
-  const value = input.trim();
-  const modern = value.match(/(?:arxiv\.org\/(?:abs|pdf)\/|^)(\d{4}\.\d{4,5})(?:v\d+)?(?:\.pdf)?$/i);
-  if (modern) return modern[1];
-  const legacy = value.match(/(?:arxiv\.org\/(?:abs|pdf)\/|^)([a-z-]+(?:\.[A-Z]{2})?\/\d{7})(?:v\d+)?(?:\.pdf)?$/i);
-  return legacy?.[1] ?? null;
+  return parseArxivReference(input)?.id ?? null;
 }
 
-export async function fetchArxivMetadata(arxivId, fetcher = globalThis.fetch) {
-  try {
-    const pageMetadata = await fetchArxivPageMetadata(arxivId, fetcher);
-    if (pageMetadata) return pageMetadata;
-  } catch {
-    // The Atom endpoint below is a second official source when the abstract page is unavailable.
-  }
-
+export async function fetchArxivMetadata(arxivId, fetcher = globalThis.fetch, { signal } = {}) {
   try {
     const response = await fetchWithRetry(fetcher, `https://export.arxiv.org/api/query?id_list=${encodeURIComponent(arxivId)}`, {
       headers: { "User-Agent": "PaperOcean/0.2 local-reader" },
+      signal,
     }, { attempts: 1, timeoutMs: 15_000 });
-    if (!response.ok) return null;
+    if (!response.ok) throw new Error("arXiv 元数据暂不可用");
     const xml = await response.text();
-    const entry = xml.match(/<entry>([\s\S]*?)<\/entry>/)?.[1];
-    if (!entry) return null;
+    const entry = xml.match(/<entry(?:\s[^>]*)?>([\s\S]*?)<\/entry>/)?.[1];
+    if (!entry) throw new Error("arXiv 元数据为空");
+    const reference = parseArxivReference(decodeXml(entry.match(/<id(?:\s[^>]*)?>([\s\S]*?)<\/id>/)?.[1]));
+    const requested = parseArxivReference(arxivId);
+    if (!reference || reference.id !== requested?.id || (requested.version && reference.version !== requested.version)) throw new Error("arXiv 元数据版本不匹配");
     return {
-      title: decodeXml(entry.match(/<title>([\s\S]*?)<\/title>/)?.[1]),
-      abstract: decodeXml(entry.match(/<summary>([\s\S]*?)<\/summary>/)?.[1]),
-      authors: [...entry.matchAll(/<author>[\s\S]*?<name>([\s\S]*?)<\/name>[\s\S]*?<\/author>/g)]
+      title: decodeXml(entry.match(/<title(?:\s[^>]*)?>([\s\S]*?)<\/title>/)?.[1]),
+      abstract: decodeXml(entry.match(/<summary(?:\s[^>]*)?>([\s\S]*?)<\/summary>/)?.[1]),
+      authors: [...entry.matchAll(/<author(?:\s[^>]*)?>[\s\S]*?<name(?:\s[^>]*)?>([\s\S]*?)<\/name>[\s\S]*?<\/author>/g)]
         .map((match) => decodeXml(match[1])),
+      arxivVersion: reference?.version ?? requested?.version,
+      publishedAt: publicationDate(entry.match(/<published(?:\s[^>]*)?>([\s\S]*?)<\/published>/)?.[1]),
+      revisedAt: publicationDate(entry.match(/<updated(?:\s[^>]*)?>([\s\S]*?)<\/updated>/)?.[1]),
     };
   } catch {
-    return null;
+    signal?.throwIfAborted();
+    try { return await fetchArxivPageMetadata(arxivId, fetcher, signal); } catch { signal?.throwIfAborted(); return null; }
   }
 }
 
@@ -160,6 +166,7 @@ async function openedPaperFromBuffer(buffer, source) {
     arxivId: source.arxivId,
     title: source.title || path.basename(source.name, path.extname(source.name)),
     abstract: source.abstract || "",
+    ...paperMetadata(source),
     openedAt: Date.now(),
     dataBase64: buffer.toString("base64"),
   };
@@ -176,6 +183,7 @@ export async function importPdfBuffer(buffer, source = {}) {
     arxivId: source.arxivId,
     title: source.title,
     abstract: source.abstract,
+    ...paperMetadata(source),
   });
 }
 
@@ -191,8 +199,40 @@ export async function readPdfFile(filePath) {
   });
 }
 
+export async function manageOriginal(rootDir, opened) {
+  const buffer = Buffer.from(opened.dataBase64, "base64");
+  const id = createHash("sha256").update(buffer).digest("hex").slice(0, 24);
+  if (id !== opened.id || buffer.subarray(0, 4).toString() !== "%PDF" || buffer.length > MAX_PDF_BYTES) throw new Error("原件校验失败，未保存不匹配的 PDF");
+  const directory = path.join(rootDir, "originals");
+  const target = path.join(directory, `${id}.pdf`);
+  await fs.mkdir(directory, { recursive: true });
+  let existing;
+  try { existing = await fs.readFile(target); } catch (error) { if (error.code !== "ENOENT") throw error; }
+  if (!existing?.equals(buffer)) {
+    if (existing) await fs.copyFile(target, `${target}.before-repair-${randomUUID()}`);
+    const temporary = `${target}.part-${randomUUID()}`;
+    try { await fs.writeFile(temporary, buffer, { flag: "wx" }); await fs.rename(temporary, target); }
+    finally { await fs.rm(temporary, { force: true }).catch(() => undefined); }
+  }
+  return { ...opened, path: target, originalPath: opened.originalPath || (path.resolve(opened.path) !== path.resolve(target) ? opened.path : undefined), managedOriginal: true };
+}
+
+export async function reopenManagedPdf(rootDir, filePath, expectedId) {
+  if (expectedId && !/^[a-f0-9]{24}$/.test(expectedId)) throw new Error("论文内容 ID 无效");
+  const managed = expectedId ? path.join(rootDir, "originals", `${expectedId}.pdf`) : undefined;
+  let lastError;
+  for (const candidate of [...new Set([managed, filePath].filter(Boolean))]) {
+    try {
+      const opened = await readPdfFile(candidate);
+      if (expectedId && opened.id !== expectedId) throw new Error("原文件内容已变化，请重新定位相同版本的 PDF；已有引用与讨论仍保留。");
+      return manageOriginal(rootDir, opened);
+    } catch (error) { lastError = error; }
+  }
+  throw lastError || new Error("原件不存在，请重新定位 PDF");
+}
+
 function normalizedArxivId(value) {
-  const arxivId = extractArxivId(String(value || ""));
+  const arxivId = parseArxivReference(String(value || ""))?.reference;
   if (!arxivId) throw new Error("arXiv ID 无效");
   return arxivId;
 }
@@ -270,67 +310,86 @@ async function ensureArxivPdfCached(
   importsDir,
   fetcher,
   maximumBytes = MAX_PDF_BYTES,
+  options = {},
 ) {
+  options.signal?.throwIfAborted();
   const filePath = arxivPdfCachePath(importsDir, arxivId);
   if (await validPdfFile(filePath)) {
+    const { size } = await fs.stat(filePath);
+    options.onProgress?.({ phase: "complete", received: size, total: size, resumed: false });
     return assertPdfWithinSize(filePath, maximumBytes);
   }
 
   const taskKey = `${path.resolve(importsDir)}\n${arxivId}`;
-  const running = arxivDownloadTasks.get(taskKey);
-  if (running) {
-    try {
-      const runningPath = await running.promise;
-      return await assertPdfWithinSize(runningPath, maximumBytes);
-    } catch (error) {
-      if (error?.code === "PDF_SIZE_LIMIT" && running.maximumBytes < maximumBytes) {
-        return ensureArxivPdfCached(arxivId, importsDir, fetcher, maximumBytes);
-      }
-      throw error;
-    }
+  let task = arxivDownloadTasks.get(taskKey);
+  if (task?.controller.signal.aborted) {
+    // The last subscriber can leave before the writer has closed its handle.
+    // Wait for that cleanup before a new request reuses the partial file.
+    await task.promise.catch(() => undefined);
+    return ensureArxivPdfCached(arxivId, importsDir, fetcher, maximumBytes, options);
   }
-
-  const task = (async () => {
-    const response = await fetchWithRetry(fetcher, `https://arxiv.org/pdf/${arxivId}`, {
-      headers: { "User-Agent": "PaperOcean/0.3 local-reader" },
-    }, { attempts: 3, timeoutMs: 45_000 });
-    if (!response.ok) throw new Error(`arXiv 下载失败（HTTP ${response.status}）`);
-    const arrayBuffer = await response.arrayBuffer();
-    if (arrayBuffer.byteLength > maximumBytes) throw pdfSizeLimitError(maximumBytes);
-    const buffer = Buffer.from(arrayBuffer);
-    if (buffer.subarray(0, 4).toString() !== "%PDF") throw new Error("arXiv 返回的内容不是 PDF");
-
-    await fs.mkdir(importsDir, { recursive: true });
-    const tempPath = `${filePath}.part-${process.pid}-${randomUUID()}`;
-    try {
-      await fs.writeFile(tempPath, buffer);
-      await fs.rm(filePath, { force: true }).catch(() => undefined);
-      await fs.rename(tempPath, filePath);
-    } finally {
-      await fs.rm(tempPath, { force: true }).catch(() => undefined);
-    }
-    return filePath;
-  })().finally(() => arxivDownloadTasks.delete(taskKey));
-
-  arxivDownloadTasks.set(taskKey, { maximumBytes, promise: task });
-  return task;
+  if (!task) {
+    task = { controller: new AbortController(), subscribers: new Set(), maximumBytes, complete: false };
+    const running = task;
+    running.promise = downloadPdf({ url: `https://arxiv.org/pdf/${arxivId}`, filePath, fetcher, maximumBytes,
+      signal: AbortSignal.any([running.controller.signal, AbortSignal.timeout(10 * 60 * 1000)]),
+      onProgress: (progress) => { running.progress = progress; for (const subscriber of running.subscribers) subscriber.onProgress?.(progress); },
+    }).finally(() => { running.complete = true; if (arxivDownloadTasks.get(taskKey) === running) arxivDownloadTasks.delete(taskKey); });
+    arxivDownloadTasks.set(taskKey, running);
+  }
+  const running = task;
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const subscriber = { onProgress: options.onProgress };
+      const cleanup = () => { running.subscribers.delete(subscriber); options.signal?.removeEventListener("abort", abort); };
+      const abort = () => { cleanup(); if (!running.complete && !running.subscribers.size) running.controller.abort(); reject(options.signal.reason); };
+      running.subscribers.add(subscriber);
+      if (running.progress) options.onProgress?.(running.progress);
+      options.signal?.addEventListener("abort", abort, { once: true });
+      running.promise.then((value) => { cleanup(); resolve(value); }, (error) => { cleanup(); reject(error); });
+      if (options.signal?.aborted) abort();
+    });
+    return await assertPdfWithinSize(result, maximumBytes);
+  } catch (error) {
+    if (error?.code === "PDF_SIZE_LIMIT" && running.maximumBytes < maximumBytes) return ensureArxivPdfCached(arxivId, importsDir, fetcher, maximumBytes, options);
+    throw error;
+  }
 }
 
-export async function downloadArxivPaper(input, importsDir, fetcher = globalThis.fetch) {
-  const arxivId = extractArxivId(input);
-  if (!arxivId) throw new Error("当前版本只支持 arXiv 论文链接或 arXiv ID");
-
-  const [filePath, metadata] = await Promise.all([
-    ensureArxivPdfCached(arxivId, importsDir, fetcher),
-    fetchArxivMetadata(arxivId, fetcher),
-  ]);
+export async function downloadArxivPaper(input, importsDir, fetcher = globalThis.fetch, options = {}) {
+  const requested = parseArxivReference(input);
+  if (!requested) throw new Error("当前版本只支持 arXiv 论文链接或 arXiv ID");
+  options.signal?.throwIfAborted();
+  options.onProgress?.({ phase: "metadata", received: 0, resumed: false });
+  const metadataFile = `${arxivPdfCachePath(importsDir, requested.reference)}.metadata.json`;
+  let cached;
+  try { if ((await fs.stat(metadataFile)).size <= 100000) cached = JSON.parse(await fs.readFile(metadataFile, "utf8")); } catch { /* Derived cache is optional. */ }
+  const validCache = cached?.reference === requested.reference && cached.metadata && typeof cached.metadata.title === "string" && (!requested.version || cached.metadata.arxivVersion === requested.version);
+  // Explicit versions are immutable; an unversioned lookup is refreshed daily.
+  let metadata = validCache && (requested.version || Date.now() - cached.at < 86400000) ? cached.metadata : null;
+  if (!metadata) {
+    metadata = await fetchArxivMetadata(requested.reference, fetcher, options);
+    if (!metadata && validCache) metadata = cached.metadata;
+    if (metadata) {
+      await fs.mkdir(importsDir, { recursive: true });
+      await writeTextIfChanged(metadataFile, JSON.stringify({ reference: requested.reference, at: Date.now(), metadata })).catch(() => undefined);
+    }
+  }
+  const arxivVersion = requested.version ?? metadata?.arxivVersion;
+  const reference = `${requested.id}${arxivVersion ? `v${arxivVersion}` : ""}`;
+  const filePath = await ensureArxivPdfCached(reference, importsDir, fetcher, MAX_PDF_BYTES, { ...options, onProgress: (progress) => options.onProgress?.({ ...progress, reference }) });
+  options.signal?.throwIfAborted();
   const buffer = await fs.readFile(filePath);
 
   return openedPaperFromBuffer(buffer, {
-    name: `${arxivId}.pdf`,
+    name: `${reference}.pdf`,
     path: filePath,
-    sourceUrl: `https://arxiv.org/abs/${arxivId}`,
-    arxivId,
+    sourceUrl: `https://arxiv.org/abs/${reference}`,
+    arxivId: requested.id,
+    arxivVersion,
+    authors: metadata?.authors,
+    publishedAt: metadata?.publishedAt,
+    revisedAt: metadata?.revisedAt,
     title: metadata?.title,
     abstract: metadata?.abstract,
   });
@@ -418,6 +477,27 @@ export async function saveRecommendationThumbnail(thumbnailCacheDir, { arxivId: 
   return { arxivId, thumbnailPath };
 }
 
+async function writeTextIfChanged(filePath, text) {
+  if (await fs.readFile(filePath, "utf8").catch(() => null) === text) return;
+  const temporary = `${filePath}.part-${randomUUID()}`;
+  try {
+    await fs.writeFile(temporary, text, { encoding: "utf8", flag: "wx" });
+    await fs.rename(temporary, filePath);
+  } finally { await fs.rm(temporary, { force: true }).catch(() => undefined); }
+}
+
+export async function readPaperIndex(rootDir, paperId) {
+  const id = safePaperId(paperId);
+  try {
+    const file = path.join(rootDir, "papers", id, "pages-index.json");
+    if ((await fs.stat(file)).size > 64 * 1024 * 1024) return undefined;
+    const index = JSON.parse(await fs.readFile(file, "utf8"));
+    if (index.version !== 1 || index.paperId !== id || !Array.isArray(index.pages) || !index.pages.length || index.pages.length > 10_000
+      || index.pages.some((page, offset) => page.page !== offset + 1 || typeof page.text !== "string")) return undefined;
+    return index.pages;
+  } catch { return undefined; } // Derived caches may be safely regenerated from the PDF.
+}
+
 export async function savePaperContext(rootDir, { paper, pages }) {
   const paperDir = path.join(rootDir, "papers", safePaperId(paper.id));
   await fs.mkdir(paperDir, { recursive: true });
@@ -440,11 +520,12 @@ export async function savePaperContext(rootDir, { paper, pages }) {
     "",
   ]);
   const contextPath = path.join(paperDir, "PAPER_CONTEXT.md");
-  await fs.writeFile(contextPath, [...header, ...body].join("\n"), "utf8");
+  await writeTextIfChanged(contextPath, [...header, ...body].join("\n"));
+  await writeTextIfChanged(path.join(paperDir, "pages-index.json"), JSON.stringify({ version: 1, paperId: paper.id, pages }));
   return { paperDir, contextPath };
 }
 
-export async function prepareConversationContext(rootDir, { scopeKey, papers }) {
+export async function prepareConversationContext(rootDir, { scopeKey, papers, question, currentPaperId, currentPage, budgetBytes }) {
   if (!Array.isArray(papers) || !papers.length) throw new Error("对话范围中没有论文");
 
   const uniquePapers = [];
@@ -466,14 +547,21 @@ export async function prepareConversationContext(rootDir, { scopeKey, papers }) 
     .digest("hex")
     .slice(0, 24);
   const contextDir = path.join(rootDir, "research-contexts", contextId);
-  const papersDir = path.join(contextDir, "papers");
+  const sourceDocuments = await Promise.all(uniquePapers.map(async (paper) => {
+    try { return { id: paper.id, content: await fs.readFile(path.join(rootDir, "papers", paper.id, "PAPER_CONTEXT.md"), "utf8") }; }
+    catch { throw new Error(`《${paper.title}》的全文索引尚未完成，请先打开并等待索引完成`); }
+  }));
+  const selection = selectContextDocuments(sourceDocuments, { question, currentPaperId, currentPage, budgetBytes });
+  const snapshotId = createHash("sha256").update(JSON.stringify(selection.documents)).digest("hex").slice(0, 24);
+  const snapshotDir = path.join(contextDir, "snapshots", snapshotId);
+  const papersDir = path.join(snapshotDir, "papers");
   await fs.mkdir(papersDir, { recursive: true });
 
   const paperEntries = [];
   const manifest = [
     "# Paper Ocean 研究上下文",
     "",
-    `- 对话范围：${scopeKey === "all" ? "全部已打开论文" : "单篇论文"}`,
+    `- 对话范围：${uniquePapers.length > 1 ? "固定论文集合" : "单篇论文"}`,
     `- 论文数量：${uniquePapers.length}`,
     "- 论文正文均位于 untrusted 上下文；本清单只描述应用生成的标识与顺序。",
     "- 同一论文的分片按键中的 chunk 编号升序连续阅读。",
@@ -485,13 +573,8 @@ export async function prepareConversationContext(rootDir, { scopeKey, papers }) 
 
   for (let index = 0; index < uniquePapers.length; index += 1) {
     const paper = uniquePapers[index];
-    const sourcePath = path.join(rootDir, "papers", paper.id, "PAPER_CONTEXT.md");
-    let content;
-    try {
-      content = await fs.readFile(sourcePath, "utf8");
-    } catch {
-      throw new Error(`《${paper.title}》的全文索引尚未完成，请先在左侧打开并等待索引完成`);
-    }
+    const provided = selection.documents[index];
+    const content = provided.content;
 
     characterCount += content.length;
     const paperKey = `paper-${createHash("sha256").update(paper.id).digest("hex").slice(0, 24)}`;
@@ -507,7 +590,7 @@ export async function prepareConversationContext(rootDir, { scopeKey, papers }) 
         const key = `${paperKey}-chunk-${sequence}-section-${section}-part-${part}`;
         const fileName = `${key}.md`;
         const targetPath = path.join(papersDir, fileName);
-        await fs.writeFile(targetPath, sectionChunks[partIndex], "utf8");
+        await writeTextIfChanged(targetPath, sectionChunks[partIndex]);
         paperEntries.push({ key, path: targetPath, kind: "untrusted" });
       }
     }
@@ -518,6 +601,7 @@ export async function prepareConversationContext(rootDir, { scopeKey, papers }) 
       `- untrusted 分片键前缀：${paperKey}-chunk-`,
       `- untrusted 分片数量：${chunkNumber}`,
       `- 提取文本字符数：${content.length}`,
+      `- 本轮提供 ${provided.pages.length}/${provided.totalPages} 页；页面节选数量：${provided.excerptPages.length}`,
       "",
     );
   }
@@ -526,8 +610,8 @@ export async function prepareConversationContext(rootDir, { scopeKey, papers }) 
   const manifestChunks = splitByUtf8ByteLimit(manifest.filter(Boolean).join("\n"));
   for (let index = 0; index < manifestChunks.length; index += 1) {
     const sequence = String(index + 1).padStart(4, "0");
-    const manifestPath = path.join(contextDir, `CONTEXT_MANIFEST.part-${sequence}.md`);
-    await fs.writeFile(manifestPath, manifestChunks[index], "utf8");
+    const manifestPath = path.join(snapshotDir, `CONTEXT_MANIFEST.part-${sequence}.md`);
+    await writeTextIfChanged(manifestPath, manifestChunks[index]);
     applicationEntries.push({
       key: `paper-ocean-manifest-part-${sequence}`,
       path: manifestPath,
@@ -540,23 +624,53 @@ export async function prepareConversationContext(rootDir, { scopeKey, papers }) 
     entries: [...applicationEntries, ...paperEntries],
     paperCount: uniquePapers.length,
     characterCount,
+    coverage: {
+      complete: selection.complete,
+      providedPages: selection.documents.reduce((sum, paper) => sum + paper.pages.length, 0),
+      totalPages: selection.documents.reduce((sum, paper) => sum + paper.totalPages, 0),
+      textBytes: selection.textBytes,
+      papers: selection.documents.map(({ id, pages, totalPages, excerptPages }) => ({ paperId: id, pages, totalPages, excerptPages })),
+    },
   };
 }
 
 export async function savePageImage(rootDir, { paperId, page, dataUrl }) {
+  if (!Number.isInteger(page) || page < 1 || page > 10_000) throw new Error("取证页码无效");
   const match = dataUrl.match(/^data:image\/png;base64,(.+)$/);
   if (!match) throw new Error("页面图片格式无效");
+  const buffer = Buffer.from(match[1], "base64");
+  if (buffer.length < 45 || buffer.length > 8 * 1024 * 1024 || !validThumbnailSignature(buffer, "png") || !buffer.subarray(-12).equals(Buffer.from([0,0,0,0,73,69,78,68,174,66,96,130]))) throw new Error("页面图片内容无效或超过 8 MB");
   const paperDir = path.join(rootDir, "papers", safePaperId(paperId));
   await fs.mkdir(paperDir, { recursive: true });
-  const imagePath = path.join(paperDir, `page-${page}.png`);
-  await fs.writeFile(imagePath, Buffer.from(match[1], "base64"));
+  const imagePath = path.join(paperDir, `evidence-v1-page-${page}.png`);
+  const temporary = `${imagePath}.part-${randomUUID()}`;
+  try {
+    await fs.writeFile(temporary, buffer, { flag: "wx" });
+    await fs.rename(temporary, imagePath);
+  } finally { await fs.rm(temporary, { force: true }).catch(() => undefined); }
   return imagePath;
 }
 
-export async function loadLibrary(filePath) {
+export async function cachedPageImage(rootDir, paperId, page) {
+  if (!Number.isInteger(page) || page < 1 || page > 10_000) return undefined;
+  const candidate = path.join(rootDir, "papers", safePaperId(paperId), `evidence-v1-page-${page}.png`);
   try {
-    const value = JSON.parse(await fs.readFile(filePath, "utf8"));
-    const papers = Array.isArray(value.papers) ? value.papers : [];
+    const stat = await fs.stat(candidate);
+    if (stat.size < 45 || stat.size > 8 * 1024 * 1024) return undefined;
+    const file = await fs.open(candidate,"r");
+    try {
+      const signature = Buffer.alloc(8);
+      await file.read(signature,0,8,0);
+      const trailer = Buffer.alloc(12);
+      await file.read(trailer,0,12,stat.size-12);
+      return signature.equals(Buffer.from([137,80,78,71,13,10,26,10])) && trailer.equals(Buffer.from([0,0,0,0,73,69,78,68,174,66,96,130])) ? candidate : undefined;
+    } finally { await file.close(); }
+  } catch { return undefined; }
+}
+
+export async function loadLibrary(filePath, { withRevision = false } = {}) {
+    const value = await readLibrarySnapshot(filePath);
+    const papers = Array.isArray(value.papers) ? value.papers.map((paper) => ({ ...paper, ...paperMetadata(paper), readingPosition: normalizeReadingPosition(paper.readingPosition) })) : [];
     const validPaperIds = new Set(papers.map((paper) => paper.id));
     const legacyMessages = value.messagesByPaper && typeof value.messagesByPaper === "object"
       ? Object.fromEntries(Object.entries(value.messagesByPaper).map(([paperId, messages]) => [
@@ -580,7 +694,9 @@ export async function loadLibrary(filePath) {
                   pending: false,
                   error: true,
                 }
-              : message;
+              : message?.pending
+                ? { ...message, pending: false, error: true, text: message.text || "上一次回答未完成，已保留现有内容。请重新发送问题。" }
+                : message;
           })
         : [],
     ]));
@@ -596,6 +712,9 @@ export async function loadLibrary(filePath) {
       validPaperIds.has(id) && requestedOpenIds.indexOf(id) === index
     ));
     return {
+      ...(withRevision ? { _revision: createHash("sha256").update(JSON.stringify(value)).digest("hex") } : {}),
+      ...normalizeReadingState(value),
+      conversations: normalizeConversations({ ...value, papers, messagesByScope }),
       papers,
       messagesByScope,
       threadsByScope: value.threadsByScope && typeof value.threadsByScope === "object"
@@ -606,15 +725,15 @@ export async function loadLibrary(filePath) {
         : {},
       openPaperIds,
       lastPaperId: value.lastPaperId,
+      lastScopeKey: typeof value.lastScopeKey === "string" ? value.lastScopeKey : undefined,
     };
-  } catch {
-    return { papers: [], messagesByScope: {}, threadsByScope: {}, aiSettingsByScope: {}, openPaperIds: [] };
-  }
 }
 
 export async function saveLibrary(filePath, state) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.tmp`;
-  await fs.writeFile(tempPath, JSON.stringify(state, null, 2), "utf8");
-  await fs.rename(tempPath, filePath);
+  return writeLibrarySnapshot(filePath, state);
+}
+
+export async function recoverLibrary(filePath) {
+  await recoverLibrarySnapshot(filePath);
+  return loadLibrary(filePath);
 }

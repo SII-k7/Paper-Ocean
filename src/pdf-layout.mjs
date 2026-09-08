@@ -1,5 +1,12 @@
-export const MIN_PDF_ZOOM = 0.65;
+export const MIN_PDF_ZOOM = 0.25;
 export const MAX_PDF_ZOOM = 4;
+
+export function pdfCanvasSize(width, height, devicePixelRatio = 1) {
+  if (![width, height].every((value) => Number.isFinite(value) && value > 0)) throw new Error("PDF 页面尺寸无效。");
+  // Extremely tall pages and HiDPI zoom must not allocate an unbounded bitmap.
+  const ratio = Math.min(Math.max(Number(devicePixelRatio) || 1, 1), 2, Math.sqrt(16_000_000 / (width * height)), 8192 / width, 8192 / height);
+  return { width: Math.max(1, Math.floor(width * ratio)), height: Math.max(1, Math.floor(height * ratio)), ratio };
+}
 
 export function calculateFitZoom({
   stageWidth,

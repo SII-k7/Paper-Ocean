@@ -8,7 +8,7 @@ import {
   type CSSProperties,
 } from "react";
 import { ExternalLink, RefreshCw } from "lucide-react";
-import type { PaperRecord, Recommendation } from "../types";
+import type { PaperRecord, Recommendation, RecommendationResult } from "../types";
 import RecommendationThumbnail from "./RecommendationThumbnail";
 
 type Props = {
@@ -39,15 +39,6 @@ const CARD_ACTIONS_STYLE: CSSProperties = {
   position: "relative",
   zIndex: 2,
   pointerEvents: "auto",
-};
-
-const DISCOVERY_LABEL_STYLE: CSSProperties = {
-  flex: 1,
-  display: "grid",
-  placeItems: "center",
-  color: "#5f6977",
-  borderBottom: "2px solid transparent",
-  fontSize: 10,
 };
 
 const RecommendationCard = memo(function RecommendationCard({
@@ -84,16 +75,15 @@ const RecommendationCard = memo(function RecommendationCard({
 
       <div className="paper-meta" aria-label="论文数据">
         <span className="recommendation-card__rank">{String(index + 1).padStart(2, "0")}</span>
-        {item.year && <span className="paper-year">{item.year}</span>}
+        <span className="paper-year">{item.publishedAt || item.year || "日期未知"}</span>
         {item.citationCount !== undefined && <span>引用 {item.citationCount}</span>}
-        {item.score !== undefined && <span>综合 {Math.round(item.score * 100)}</span>}
       </div>
       <div className="recommendation-card__content">
-        <RecommendationThumbnail
+        {item.arxivId && <RecommendationThumbnail
           arxivId={item.arxivId}
           title={item.title}
           generation={generation}
-        />
+        />}
         <div className="recommendation-card__body">
           <h3 id={titleId}>{item.title}</h3>
           <p className="authors">{item.authors.join(", ") || "作者信息未知"}</p>
@@ -109,6 +99,7 @@ const RecommendationCard = memo(function RecommendationCard({
                 主页 <ExternalLink size={10} strokeWidth={1.8} aria-hidden="true" />
               </button>
             )}
+            {item.source && <button type="button" disabled={!item.sourceUrl} aria-label={`查看《${item.title}》的 ${item.source} 来源记录`} onClick={() => { if (item.sourceUrl) void window.paperOcean.openExternal(item.sourceUrl); }}>{item.source} ↗</button>}
           </div>
         </div>
       </div>
@@ -121,6 +112,10 @@ function RecommendationPanel({ paper, onOpenArxiv }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [mode, setMode] = useState<"recent" | "foundations">("recent");
+  const [snapshot, setSnapshot] = useState<RecommendationResult | null>(null);
+  const consumedRefreshRef = useRef(0);
+  const displayedRef = useRef("");
   const onOpenArxivRef = useRef(onOpenArxiv);
   const currentYear = new Date().getFullYear();
 
@@ -137,22 +132,25 @@ function RecommendationPanel({ paper, onOpenArxiv }: Props) {
       return;
     }
     let cancelled = false;
-    setItems([]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const key = `${paper.id}:${mode}`;
+    if (displayedRef.current !== key) { setItems([]); setSnapshot(null); displayedRef.current = key; }
     setLoading(true);
     setError(null);
-    window.paperOcean.recommendations({
-      title: paper.title,
-      abstract: paper.abstract,
-      arxivId: paper.arxivId,
-    }).then((nextItems) => {
-      if (!cancelled) setItems(nextItems);
-    }).catch((reason) => {
-      if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
-    }).finally(() => {
-      if (!cancelled) setLoading(false);
-    });
-    return () => { cancelled = true; };
-  }, [paper?.id, paper?.title, paper?.abstract, paper?.arxivId, refreshKey]);
+    const refresh = consumedRefreshRef.current !== refreshKey;
+    consumedRefreshRef.current = refreshKey;
+    const request = (refresh = false) => {
+      void window.paperOcean.recommendations({ title: paper.title, abstract: paper.abstract, arxivId: paper.arxivId, mode, refresh }).then((result) => {
+        if (cancelled) return;
+        setItems(result.items); setSnapshot(result); setError(result.error ?? null);
+        if (result.pending) timer = setTimeout(() => request(), 5000);
+      }).catch((reason) => {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+      }).finally(() => { if (!cancelled) setLoading(false); });
+    };
+    request(refresh);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [paper?.id, paper?.title, paper?.abstract, paper?.arxivId, mode, refreshKey]);
 
   return (
     <section
@@ -163,7 +161,7 @@ function RecommendationPanel({ paper, onOpenArxiv }: Props) {
       <div className="panel-heading recommendation-heading">
         <div>
           <span className="eyebrow">DISCOVERY</span>
-          <h2 id="recommendation-panel-title">近三年精选</h2>
+          <h2 id="recommendation-panel-title">{mode === "recent" ? "近期进展" : "基础工作"}</h2>
         </div>
         <button
           type="button"
@@ -178,35 +176,31 @@ function RecommendationPanel({ paper, onOpenArxiv }: Props) {
       </div>
 
       <div className="discovery-tabs" role="group" aria-label="推荐筛选条件">
-        <span
-          aria-current="true"
-          style={{ ...DISCOVERY_LABEL_STYLE, color: "#77e6b6", borderColor: "#77e6b6" }}
-        >
-          {currentYear - 2}–{currentYear}
-        </span>
-        <span aria-disabled="true" style={DISCOVERY_LABEL_STYLE}>领域地图</span>
-        <span aria-disabled="true" style={DISCOVERY_LABEL_STYLE}>宁缺毋滥</span>
+        <button type="button" aria-pressed={mode === "recent"} onClick={() => setMode("recent")}>近期进展</button>
+        <button type="button" aria-pressed={mode === "foundations"} onClick={() => setMode("foundations")}>基础工作</button>
       </div>
+      <p className="recommendation-explanation">{mode === "recent" ? `${currentYear - 2}–${currentYear} 的主题相关候选，相关度优先，引用量辅助排序。` : "从数据库收录的参考文献追溯方法来源，不限近三年；引用关系不代表重要性已获验证。"}</p>
+      {snapshot && <p className="recommendation-cache" role="status">{snapshot.cache === "fresh" ? "已更新" : snapshot.cache === "stale" ? "使用旧缓存" : "使用缓存"} · {new Date(snapshot.fetchedAt).toLocaleString()}{snapshot.pending ? " · 后台更新中…" : ""}</p>}
 
       <div className="recommendation-list">
         {!paper && <div className="side-empty">打开论文后，这里会生成你的下一站。</div>}
-        {loading && <div className="side-empty" role="status" aria-live="polite">正在综合关联度与近年影响力筛选论文…</div>}
+        {loading && <div className="side-empty" role="status" aria-live="polite">正在检索论文，后台同时处理最多两项任务…</div>}
         {error && (
           <div className="side-error" role="alert">
-            <strong>暂时无法获取推荐</strong>
+            <strong>{items.length ? "推荐未能更新，仍可阅读已有结果" : "暂时无法获取推荐"}</strong>
             <span>{error}</span>
             <button type="button" onClick={refresh} aria-label="重试获取论文推荐">重试</button>
           </div>
         )}
         {!loading && !error && paper && !items.length && (
-          <div className="side-empty" role="status">近三年内暂时没有达到质量门槛、且可直接打开的论文。</div>
+          <div className="side-empty" role="status">{mode === "recent" ? "近三年暂未找到可直接打开的相关候选。" : "数据库暂未返回可用的参考文献，请结合原文参考文献列表查找。"}</div>
         )}
         {items.map((item, index) => (
           <RecommendationCard
             key={item.paperId}
             item={item}
             index={index}
-            generation={`${paper?.id ?? "empty"}:${refreshKey}`}
+            generation={`${paper?.id ?? "empty"}:${mode}:${refreshKey}`}
             onOpenArxiv={openArxiv}
           />
         ))}

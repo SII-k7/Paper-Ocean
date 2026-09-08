@@ -4,20 +4,19 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type RefObject,
 } from "react";
-import { ArrowLeft, ArrowRight, Minus, Plus, Waves } from "lucide-react";
-import * as pdfjs from "pdfjs-dist";
+import { ArrowLeft, ArrowRight, Minus, Plus, Waves, Search, List, Undo2 } from "lucide-react";
+import { pdfjs, pdfResourceOptions } from "../pdf-runtime";
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import { calculateFitZoom, MAX_PDF_ZOOM, MIN_PDF_ZOOM } from "../pdf-layout.mjs";
-import type { OpenedPaper, PdfPageIndex } from "../types";
-
-pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  "pdfjs-dist/build/pdf.worker.mjs",
-  import.meta.url,
-).toString();
+import { calculateFitZoom, pdfCanvasSize, MAX_PDF_ZOOM, MIN_PDF_ZOOM } from "../pdf-layout.mjs";
+import type { EvidenceRect, PaperHighlight, OpenedPaper, PdfPageIndex, ReadingPosition } from "../types";
+import { findTextMatches, pageTextWithRanges, resolvePdfDestination, safePdfUrl, type PdfSearchResult } from "../pdf-navigation.mjs";
+import PdfNavigationPanel from "./PdfNavigationPanel";
 
 type PositionedText = {
   id: string;
@@ -27,7 +26,13 @@ type PositionedText = {
   width: number;
   height: number;
   angle: number;
+  start: number;
+  end: number;
 };
+
+type PdfLink = { id: string; rect: number[]; dest?: unknown; url?: string | null; action?: string };
+type SearchTarget = PdfSearchResult & { request: number };
+const EMPTY_PAGES: PdfPageIndex[] = [];
 
 type PageSize = {
   width: number;
@@ -35,15 +40,21 @@ type PageSize = {
 };
 
 const CURRENT_PAGE_THRESHOLDS = Array.from({ length: 21 }, (_, index) => index / 20);
+const READING_LINE = 64;
 
 export type PdfReaderHandle = {
-  capturePage(): string | null;
+  capturePage(paperId: string, page: number): string | null;
+  capturePosition(): ReadingPosition | null;
 };
 
 type Props = {
   paper: OpenedPaper | null;
+  highlights?: PaperHighlight[];
   cachedPages?: PdfPageIndex[];
   currentPage: number;
+  readingPosition?: ReadingPosition;
+  destination?: { paperId: string; position: ReadingPosition; requestId: number };
+  onPositionChange(paperId: string, position: ReadingPosition): void;
   onPageChange(page: number): void;
   onIndexed(input: {
     pages: PdfPageIndex[];
@@ -51,10 +62,11 @@ type Props = {
     inferredAbstract?: string;
     pageCount: number;
   }): void;
-  onSelection(text: string, page: number): void;
+  onSelection(text: string, page: number, rects: EvidenceRect[]): void;
 };
 
 type PdfPageViewProps = {
+  highlights: PaperHighlight[];
   document: PDFDocumentProxy;
   pageNumber: number;
   zoom: number;
@@ -63,8 +75,12 @@ type PdfPageViewProps = {
   stageRef: RefObject<HTMLDivElement | null>;
   registerShell(page: number, node: HTMLDivElement | null): void;
   registerCanvas(page: number, node: HTMLCanvasElement | null): void;
-  onSelection(text: string, page: number): void;
+  onSelection(text: string, page: number, rects: EvidenceRect[]): void;
   onError(message: string): void;
+  searchQuery: string;
+  searchTarget: SearchTarget | null;
+  onSearchReady(target: SearchTarget, node: HTMLElement): void;
+  onLink(link: PdfLink): void;
 };
 
 function base64ToBytes(base64: string) {
@@ -77,13 +93,7 @@ function base64ToBytes(base64: string) {
 }
 
 function normalizePageText(items: Array<{ str?: string; hasEOL?: boolean }>) {
-  let result = "";
-  for (const item of items) {
-    const value = item.str?.trim();
-    if (!value) continue;
-    result += `${value}${item.hasEOL ? "\n" : " "}`;
-  }
-  return result.replace(/[ \t]+\n/g, "\n").replace(/ {2,}/g, " ").trim();
+  return pageTextWithRanges(items).text.replace(/[ \t]+\n/g, "\n").replace(/ {2,}/g, " ").trim();
 }
 
 function inferMetadata(firstPageItems: Array<Record<string, unknown>>) {
@@ -118,6 +128,7 @@ function inferMetadata(firstPageItems: Array<Record<string, unknown>>) {
 }
 
 const PdfPageView = memo(function PdfPageView({
+  highlights,
   document,
   pageNumber,
   zoom,
@@ -128,13 +139,20 @@ const PdfPageView = memo(function PdfPageView({
   registerCanvas,
   onSelection,
   onError,
+  searchQuery,
+  searchTarget,
+  onSearchReady,
+  onLink,
 }: PdfPageViewProps) {
   const shellRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [nearViewport, setNearViewport] = useState(pageNumber <= 2);
   const [naturalSize, setNaturalSize] = useState(fallbackSize);
   const [textItems, setTextItems] = useState<PositionedText[]>([]);
+  const [pageText, setPageText] = useState("");
+  const [links, setLinks] = useState<PdfLink[]>([]);
   const shouldRender = current || nearViewport;
+  const matches = useMemo(() => findTextMatches(pageText, searchQuery), [pageText, searchQuery]);
 
   useEffect(() => {
     registerShell(pageNumber, shellRef.current);
@@ -145,6 +163,7 @@ const PdfPageView = memo(function PdfPageView({
     if (!shouldRender) {
       registerCanvas(pageNumber, null);
       setTextItems([]);
+      setPageText(""); setLinks([]);
       return;
     }
     registerCanvas(pageNumber, canvasRef.current);
@@ -175,13 +194,14 @@ const PdfPageView = memo(function PdfPageView({
       const viewport = page.getViewport({ scale: zoom });
       setNaturalSize({ width: naturalViewport.width, height: naturalViewport.height });
 
-      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      const bitmap = pdfCanvasSize(viewport.width, viewport.height, window.devicePixelRatio);
+      const ratio = bitmap.ratio;
       const canvas = canvasRef.current;
       const context = canvas.getContext("2d", { alpha: false });
       if (!context) return;
 
-      canvas.width = Math.floor(viewport.width * ratio);
-      canvas.height = Math.floor(viewport.height * ratio);
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
       canvas.style.width = `${viewport.width}px`;
       canvas.style.height = `${viewport.height}px`;
 
@@ -199,8 +219,11 @@ const PdfPageView = memo(function PdfPageView({
 
       const content = await page.getTextContent();
       if (cancelled) return;
+      const text = pageTextWithRanges(content.items.map((item) => "str" in item ? item : {}));
+      const ranges = new Map(text.ranges.map((range) => [range.index, range]));
+      setPageText(text.text);
       const positioned = content.items.flatMap((item, index) => {
-        if (!("str" in item) || !item.str) return [];
+        if (!("str" in item) || !item.str || !ranges.has(index)) return [];
         const transform = pdfjs.Util.transform(viewport.transform, item.transform);
         const height = Math.max(4, Math.hypot(transform[2], transform[3]));
         return [{
@@ -211,10 +234,22 @@ const PdfPageView = memo(function PdfPageView({
           width: Math.max(item.width * zoom, 2),
           height,
           angle: Math.atan2(transform[1], transform[0]),
+          start: ranges.get(index)!.start,
+          end: ranges.get(index)!.end,
         }];
       });
       setTextItems(positioned);
       await renderPromise;
+      const annotations = await page.getAnnotations({ intent: "display" });
+      if (!cancelled) setLinks(annotations.flatMap((annotation) => {
+        if (annotation.subtype !== "Link" || !Array.isArray(annotation.rect) || annotation.rect.length !== 4 || !annotation.rect.every(Number.isFinite)) return [];
+        const url = safePdfUrl(annotation.url);
+        const action = ["NextPage", "PrevPage", "FirstPage", "LastPage", "GoBack"].includes(annotation.action) ? annotation.action : undefined;
+        if (!annotation.dest && !url && !action) return [];
+        const [x1, y1] = viewport.convertToViewportPoint(annotation.rect[0], annotation.rect[1]);
+        const [x2, y2] = viewport.convertToViewportPoint(annotation.rect[2], annotation.rect[3]);
+        return [{ id: String(annotation.id), rect: [x1, y1, x2, y2], dest: annotation.dest, url, action }];
+      }));
     }).catch((reason) => {
       if (!cancelled && reason?.name !== "RenderingCancelledException") {
         onError(reason instanceof Error ? reason.message : String(reason));
@@ -227,13 +262,45 @@ const PdfPageView = memo(function PdfPageView({
     };
   }, [document, onError, pageNumber, shouldRender, zoom]);
 
+  useEffect(() => {
+    if (searchTarget?.page !== pageNumber || !textItems.length) return;
+    const node = shellRef.current?.querySelector<HTMLElement>(`[data-search-occurrence="${searchTarget.occurrence}"]`);
+    if (node) onSearchReady(searchTarget, node);
+  }, [searchTarget, pageNumber, textItems, matches, onSearchReady]);
+
   const captureSelection = useCallback(() => {
     window.setTimeout(() => {
       const selection = window.getSelection();
       if (!selection || selection.isCollapsed) return;
-      const text = selection.toString().replace(/\s+/g, " ").trim();
-      if (text.length >= 2 && shellRef.current?.contains(selection.anchorNode)) {
-        onSelection(text, pageNumber);
+      let text = selection.toString().replace(/\s+/g, " ").trim();
+      const page = shellRef.current?.querySelector(".pdf-page");
+      if (!page?.contains(selection.anchorNode)) return;
+      if (!page.contains(selection.focusNode)) {
+        onSelection("", pageNumber, []);
+        return;
+      }
+      if (text.length >= 2 && selection.rangeCount) {
+        const range = selection.getRangeAt(0);
+        let lastTop: number | undefined;
+        let reconstructed = "";
+        for (const span of page.querySelectorAll<HTMLElement>(".pdf-text-layer span")) {
+          if (!range.intersectsNode(span) || !span.firstChild) continue;
+          const node = span.firstChild;
+          const part = (node.textContent ?? "").slice(range.startContainer === node ? range.startOffset : 0, range.endContainer === node ? range.endOffset : undefined);
+          if (!part) continue;
+          const rect = span.getBoundingClientRect();
+          if (lastTop !== undefined && Math.abs(lastTop - rect.top) > rect.height * .6) reconstructed += " ";
+          reconstructed += part;
+          lastTop = rect.top;
+        }
+        text = reconstructed.replace(/\s+/g, " ").trim() || text;
+        const bounds = page.getBoundingClientRect();
+        const rects = Array.from(range.getClientRects()).flatMap((rect) => {
+          const left = Math.max(rect.left, bounds.left), top = Math.max(rect.top, bounds.top);
+          const right = Math.min(rect.right, bounds.right), bottom = Math.min(rect.bottom, bounds.bottom);
+          return right > left && bottom > top ? [{ x: (left - bounds.left) / bounds.width, y: (top - bounds.top) / bounds.height, width: (right - left) / bounds.width, height: (bottom - top) / bounds.height }] : [];
+        });
+        onSelection(text, pageNumber, rects);
       }
     }, 0);
   }, [onSelection, pageNumber]);
@@ -257,7 +324,17 @@ const PdfPageView = memo(function PdfPageView({
         className="pdf-page"
         style={{ width: pageSize.width, height: pageSize.height }}
         onMouseUp={captureSelection}
+        onKeyUp={captureSelection}
       >
+        <div className="pdf-highlights" aria-hidden="true">
+          {highlights.flatMap((highlight) => highlight.rects.map((rect, index) => <span key={`${highlight.id}:${index}`} className={`pdf-highlight pdf-highlight--${highlight.color}`} style={{ left: `${rect.x * 100}%`, top: `${rect.y * 100}%`, width: `${rect.width * 100}%`, height: `${rect.height * 100}%` }} />))}
+        </div>
+        <div className="pdf-search-highlights" aria-hidden="true">{matches.flatMap((match, occurrence) => textItems.flatMap((item) => {
+          const start = Math.max(match.start, item.start), end = Math.min(match.end, item.end);
+          if (end <= start) return [];
+          const fraction = (start - item.start) / (item.end - item.start);
+          return [<i key={`${occurrence}:${item.id}`} data-search-occurrence={occurrence} className={searchTarget?.page === pageNumber && searchTarget.occurrence === occurrence ? "active" : ""} style={{ left: item.left + Math.cos(item.angle) * item.width * fraction, top: item.top + Math.sin(item.angle) * item.width * fraction, width: item.width * (end - start) / (item.end - item.start), height: item.height, transform: `rotate(${item.angle}rad)`, transformOrigin: "0 0" }} />];
+        }))}</div>
         {shouldRender ? (
           <>
             <canvas ref={canvasRef} />
@@ -277,6 +354,7 @@ const PdfPageView = memo(function PdfPageView({
                 >{item.text}</span>
               ))}
             </div>
+            <div className="pdf-link-layer">{links.map((link) => <button type="button" key={link.id} aria-label={link.url ? `打开链接 ${link.url}` : "跳转到 PDF 引用位置"} title={link.url || "跳转到 PDF 引用位置"} onClick={() => onLink(link)} style={{ left: Math.min(link.rect[0], link.rect[2]), top: Math.min(link.rect[1], link.rect[3]), width: Math.abs(link.rect[2] - link.rect[0]), height: Math.abs(link.rect[3] - link.rect[1]) }} />)}</div>
           </>
         ) : (
           <div
@@ -291,7 +369,7 @@ const PdfPageView = memo(function PdfPageView({
 });
 
 const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
-  { paper, cachedPages, currentPage, onPageChange, onIndexed, onSelection },
+  { paper, highlights = [], cachedPages, currentPage, readingPosition, destination, onPositionChange, onPageChange, onIndexed, onSelection },
   ref,
 ) {
   const stageRef = useRef<HTMLDivElement>(null);
@@ -301,6 +379,8 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
   const currentPageObserverRef = useRef<IntersectionObserver | null>(null);
   const currentPageRef = useRef(currentPage);
   const initialPageRef = useRef(1);
+  const positionRef = useRef<ReadingPosition | null>(null);
+  const onPositionChangeRef = useRef(onPositionChange);
   const initialScrollCompleteRef = useRef(false);
   const suppressScrollSyncRef = useRef(false);
   const lastZoomRef = useRef(1.15);
@@ -315,19 +395,35 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
   const [loading, setLoading] = useState(false);
   const [indexProgress, setIndexProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [navigation, setNavigation] = useState<"search" | "outline" | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchTarget, setSearchTarget] = useState<SearchTarget | null>(null);
+  const [indexedPages, setIndexedPages] = useState<PdfPageIndex[]>(EMPTY_PAGES);
+  const [backPositions, setBackPositions] = useState<ReadingPosition[]>([]);
+  const searchRequestRef = useRef(0);
+  const appliedSearchRef = useRef(0);
+  const linkRequestRef = useRef(0);
+  const navigationOpenerRef = useRef<HTMLElement | null>(null);
+  const viewRef = useRef({ zoom, fitWidth });
+  viewRef.current = { zoom, fitWidth };
 
   const paperKey = paper?.id;
   const document = loadedPaperKey === paperKey ? loadedDocument : null;
+  const displayedPaperRef = useRef<string | undefined>(undefined);
+  displayedPaperRef.current = document ? paperKey : undefined;
 
   onPageChangeRef.current = onPageChange;
   onIndexedRef.current = onIndexed;
   onSelectionRef.current = onSelection;
+  onPositionChangeRef.current = onPositionChange;
   currentPageRef.current = currentPage;
 
   useImperativeHandle(ref, () => ({
-    capturePage() {
-      return canvasRefs.current.get(currentPageRef.current)?.toDataURL("image/png") ?? null;
+    capturePage(paperId, page) {
+      if (displayedPaperRef.current !== paperId) return null;
+      return canvasRefs.current.get(page)?.toDataURL("image/png") ?? null;
     },
+    capturePosition() { return positionRef.current; },
   }), []);
 
   const paperData = paper?.dataBase64;
@@ -377,8 +473,8 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
   }, []);
 
   const handleRenderError = useCallback((message: string) => setError(message), []);
-  const handleSelection = useCallback((text: string, page: number) => {
-    onSelectionRef.current(text, page);
+  const handleSelection = useCallback((text: string, page: number, rects: EvidenceRect[]) => {
+    onSelectionRef.current(text, page, rects);
   }, []);
 
   const scrollPageIntoView = useCallback((page: number) => {
@@ -386,13 +482,56 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
     const shell = shellRefs.current.get(page);
     if (!stage || !shell) return false;
     const stageRect = stage.getBoundingClientRect();
-    const shellRect = shell.getBoundingClientRect();
+    const shellRect = (shell.querySelector(".pdf-page") ?? shell).getBoundingClientRect();
     stage.scrollTo({
-      top: Math.max(0, stage.scrollTop + shellRect.top - stageRect.top - 12),
+      top: Math.max(0, stage.scrollTop + shellRect.top - stageRect.top - READING_LINE),
       behavior: "auto",
     });
     return true;
   }, []);
+
+  const restorePosition = useCallback((position: ReadingPosition) => {
+    const stage = stageRef.current;
+    const shell = shellRefs.current.get(position.page);
+    if (!stage || !shell || !stage.clientHeight) return;
+    const outer = stage.getBoundingClientRect();
+    const rect = (shell.querySelector(".pdf-page") ?? shell).getBoundingClientRect();
+    stage.scrollTo({
+      top: Math.max(0, stage.scrollTop + rect.top - outer.top + rect.height * position.y - READING_LINE),
+      left: Math.max(0, stage.scrollLeft + rect.left - outer.left + rect.width * position.x - stage.clientWidth / 2),
+      behavior: "auto",
+    });
+  }, []);
+
+  const readPosition = useCallback((): ReadingPosition | null => {
+    const stage = stageRef.current;
+    if (!stage || !stage.clientHeight || !initialScrollCompleteRef.current) return null;
+    const outer = stage.getBoundingClientRect();
+    const shells = [...shellRefs.current.entries()];
+    const visible = shells.find(([, shell]) => shell.getBoundingClientRect().bottom > outer.top + READING_LINE);
+    if (!visible) return null;
+    const [page, shell] = visible;
+    const rect = (shell.querySelector(".pdf-page") ?? shell).getBoundingClientRect();
+    if (!rect.height || !rect.width) return null;
+    return {
+      page, y: Math.max(0, Math.min(1, (outer.top + READING_LINE - rect.top) / rect.height)),
+      x: Math.max(0, Math.min(1, (outer.left + stage.clientWidth / 2 - rect.left) / rect.width)),
+      ...viewRef.current,
+    };
+  }, []);
+
+  const recordPosition = useCallback(() => {
+    if (!paperKey || suppressScrollSyncRef.current) return;
+    const next = readPosition();
+    if (!next) return;
+    positionRef.current = next;
+    onPositionChangeRef.current(paperKey, next);
+  }, [paperKey, readPosition]);
+
+  useEffect(() => {
+    window.addEventListener("paper-ocean-before-save", recordPosition);
+    return () => window.removeEventListener("paper-ocean-before-save", recordPosition);
+  }, [recordPosition]);
 
   const goToPage = useCallback((requestedPage: number) => {
     const totalPages = document?.numPages ?? 1;
@@ -401,10 +540,85 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
     currentPageRef.current = page;
     onPageChangeRef.current(page);
     scrollPageIntoView(page);
+    positionRef.current = { page, y: 0, x: 0.5, zoom, fitWidth };
+    if (paperKey) onPositionChangeRef.current(paperKey, positionRef.current);
     window.requestAnimationFrame(() => {
       suppressScrollSyncRef.current = false;
     });
-  }, [document, scrollPageIntoView]);
+  }, [document, scrollPageIntoView, paperKey, zoom, fitWidth]);
+
+  const rememberNavigation = useCallback(() => {
+    const actual = readPosition() ?? positionRef.current;
+    if (actual) {
+      const current = { ...actual };
+      setBackPositions((positions) => [...positions.slice(-19), current]);
+    }
+  }, [readPosition]);
+
+  const goToPosition = useCallback((position: ReadingPosition) => {
+    suppressScrollSyncRef.current = true;
+    positionRef.current = position;
+    currentPageRef.current = position.page;
+    onPageChangeRef.current(position.page);
+    restorePosition(position);
+    if (paperKey) onPositionChangeRef.current(paperKey, position);
+    requestAnimationFrame(() => { suppressScrollSyncRef.current = false; });
+  }, [paperKey, restorePosition]);
+
+  const goBack = useCallback(() => {
+    const position = backPositions.at(-1);
+    if (!position) return;
+    linkRequestRef.current++;
+    setSearchTarget(null);
+    setBackPositions((positions) => positions.slice(0, -1));
+    goToPosition({ ...position, ...viewRef.current });
+  }, [backPositions, goToPosition]);
+
+  const openDestination = useCallback((destination: unknown) => {
+    if (!document) return;
+    const request = ++linkRequestRef.current;
+    void resolvePdfDestination(document, destination).then((position) => {
+      if (request !== linkRequestRef.current) return;
+      rememberNavigation(); setSearchTarget(null);
+      goToPosition({ ...position, ...viewRef.current });
+    }).catch((reason) => { if (request === linkRequestRef.current) setError(reason instanceof Error ? reason.message : String(reason)); });
+  }, [document, rememberNavigation, goToPosition]);
+
+  const openExternal = useCallback((url: string) => {
+    void window.paperOcean.openExternal(url).catch((reason) => setError(String(reason)));
+  }, []);
+  const handleLink = useCallback((link: PdfLink) => {
+    if (link.dest) openDestination(link.dest);
+    else if (link.url) openExternal(link.url);
+    else if (link.action === "GoBack") goBack();
+    else if (link.action) {
+      rememberNavigation();
+      goToPage(link.action === "FirstPage" ? 1 : link.action === "LastPage" ? document?.numPages ?? 1 : currentPageRef.current + (link.action === "NextPage" ? 1 : -1));
+    }
+  }, [openDestination, openExternal, goBack, rememberNavigation, goToPage, document]);
+
+  const handleSearch = useCallback((query: string, result: PdfSearchResult | null) => {
+    setSearchQuery(query);
+    if (!result) { setSearchTarget(null); return; }
+    rememberNavigation();
+    goToPage(result.page);
+    setSearchTarget({ ...result, request: ++searchRequestRef.current });
+  }, [rememberNavigation, goToPage]);
+
+  const handleSearchReady = useCallback((target: SearchTarget, node: HTMLElement) => {
+    const stage = stageRef.current;
+    if (!stage || appliedSearchRef.current === target.request) return;
+    appliedSearchRef.current = target.request;
+    const page = node.closest(".pdf-page")?.getBoundingClientRect(), rect = node.getBoundingClientRect();
+    if (!page?.width || !page.height) return;
+    goToPosition({ page: target.page, y: Math.max(0, Math.min(1, (rect.top - page.top - 24) / page.height)), x: Math.max(0, Math.min(1, (rect.left - page.left + rect.width / 2) / page.width)), ...viewRef.current });
+  }, [goToPosition]);
+
+  const closeNavigation = () => { setNavigation(null); setSearchQuery(""); setSearchTarget(null); navigationOpenerRef.current?.focus(); };
+  const openNavigation = (mode: "search" | "outline", opener: HTMLElement) => {
+    navigationOpenerRef.current = opener;
+    if (navigation === mode) closeNavigation(); else setNavigation(mode);
+  };
 
   useEffect(() => {
     if (!paperData || !paperKey) {
@@ -416,8 +630,12 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
     let cancelled = false;
     // PDF.js transfers the supplied ArrayBuffer to its worker. Build a fresh
     // byte array for every load so React StrictMode can safely rerun effects.
-    const task = pdfjs.getDocument({ data: base64ToBytes(paperData) });
-    const targetPage = Math.max(paper?.lastPage ?? 1, 1);
+    const task = pdfjs.getDocument({ ...pdfResourceOptions(), data: base64ToBytes(paperData) });
+    const savedPosition = readingPosition ?? { page: paper?.lastPage ?? 1, y: 0, x: 0.5, zoom: 1.15, fitWidth: true };
+    positionRef.current = savedPosition;
+    setFitWidth(savedPosition.fitWidth);
+    setZoom(savedPosition.zoom);
+    const targetPage = Math.max(savedPosition.page, 1);
     initialPageRef.current = targetPage;
     initialScrollCompleteRef.current = false;
     shellRefs.current.clear();
@@ -425,6 +643,8 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
     setLoading(true);
     setError(null);
     setIndexProgress(0);
+    setIndexedPages(EMPTY_PAGES); setNavigation(null); setSearchQuery(""); setSearchTarget(null); setBackPositions([]);
+    linkRequestRef.current++;
 
     task.promise
       .then(async (nextDocument) => {
@@ -439,7 +659,9 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
         onPageChangeRef.current(boundedTarget);
 
         if (cachedPages?.length === nextDocument.numPages) {
+          setIndexedPages(cachedPages);
           setIndexProgress(100);
+          onIndexedRef.current({ pages: cachedPages, pageCount: nextDocument.numPages });
           return;
         }
 
@@ -459,6 +681,7 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
         }
 
         if (!cancelled) {
+          setIndexedPages(pages);
           onIndexedRef.current({ pages, ...inferMetadata(firstPageItems), pageCount: nextDocument.numPages });
         }
       })
@@ -471,6 +694,7 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
 
     return () => {
       cancelled = true;
+      linkRequestRef.current++;
       void task.destroy();
     };
   }, [paperData, paperKey]);
@@ -511,14 +735,21 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
     let secondFrame = 0;
     const firstFrame = window.requestAnimationFrame(() => {
       secondFrame = window.requestAnimationFrame(() => {
-        const target = Math.min(initialPageRef.current, document.numPages);
+        const requested = destination && destination.paperId === paperKey ? destination.position : positionRef.current;
+        const target = Math.min(requested?.page ?? initialPageRef.current, document.numPages);
         suppressScrollSyncRef.current = true;
-        scrollPageIntoView(target);
+        const next = { ...requested!, page: target, zoom, fitWidth };
+        positionRef.current = next;
+        restorePosition(next);
         currentPageRef.current = target;
         onPageChangeRef.current(target);
         window.requestAnimationFrame(() => {
+          const settled = { ...next, ...viewRef.current };
+          positionRef.current = settled;
+          restorePosition(settled);
           initialScrollCompleteRef.current = true;
-          suppressScrollSyncRef.current = false;
+          window.requestAnimationFrame(() => { suppressScrollSyncRef.current = false; });
+          if (paperKey) onPositionChangeRef.current(paperKey, settled);
         });
       });
     });
@@ -526,9 +757,22 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
       window.cancelAnimationFrame(firstFrame);
       window.cancelAnimationFrame(secondFrame);
     };
-  }, [document, scrollPageIntoView]);
+  }, [document, destination, paperKey, restorePosition]);
 
   useEffect(() => {
+    const pages = stageRef.current?.querySelector(".pdf-pages");
+    if (!document || !pages) return;
+    const observer = new ResizeObserver(() => {
+      if (!initialScrollCompleteRef.current || !positionRef.current) return;
+      suppressScrollSyncRef.current = true;
+      restorePosition(positionRef.current);
+      requestAnimationFrame(() => { suppressScrollSyncRef.current = false; });
+    });
+    observer.observe(pages);
+    return () => observer.disconnect();
+  }, [document, restorePosition]);
+
+  useLayoutEffect(() => {
     if (!document) {
       lastZoomRef.current = zoom;
       return;
@@ -537,14 +781,16 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
     lastZoomRef.current = zoom;
     if (!initialScrollCompleteRef.current) return;
     suppressScrollSyncRef.current = true;
-    const frame = window.requestAnimationFrame(() => {
-      scrollPageIntoView(currentPageRef.current);
-      window.requestAnimationFrame(() => {
-        suppressScrollSyncRef.current = false;
-      });
-    });
+    const position = positionRef.current;
+    if (position) {
+      const next = { ...position, zoom, fitWidth };
+      positionRef.current = next;
+      restorePosition(next);
+      if (paperKey) onPositionChangeRef.current(paperKey, next);
+    }
+    const frame = window.requestAnimationFrame(() => { suppressScrollSyncRef.current = false; });
     return () => window.cancelAnimationFrame(frame);
-  }, [document, scrollPageIntoView, zoom]);
+  }, [document, restorePosition, paperKey, zoom, fitWidth]);
 
   useEffect(() => {
     const stage = stageRef.current;
@@ -609,7 +855,10 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
     : [];
 
   return (
-    <section className="pdf-reader" aria-label={`论文阅读器：${paper.title}`}>
+    <section className="pdf-reader" aria-label={`论文阅读器：${paper.title}`} onKeyDown={(event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") { event.preventDefault(); navigationOpenerRef.current = event.target as HTMLElement; setNavigation("search"); }
+      if (event.key === "Escape" && navigation) { event.preventDefault(); closeNavigation(); }
+    }}>
       <div className="panel-toolbar pdf-toolbar" role="toolbar" aria-label="PDF 阅读工具栏">
         <div className="page-controls" role="group" aria-label="翻页与页码跳转">
           <button
@@ -641,7 +890,9 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
           >
             <ArrowRight size={14} strokeWidth={1.8} aria-hidden="true" />
           </button>
-          <span className="scroll-mode-badge">连续滚动</span>
+          <button type="button" aria-label="查找 PDF" title="全文查找（Ctrl/⌘ F）" aria-pressed={navigation === "search"} onClick={(event) => openNavigation("search", event.currentTarget)}><Search size={14} /></button>
+          <button type="button" aria-label="打开 PDF 目录" aria-pressed={navigation === "outline"} onClick={(event) => openNavigation("outline", event.currentTarget)}><List size={14} /></button>
+          <button type="button" aria-label="返回 PDF 跳转前的位置" title="返回跳转前的位置" disabled={!backPositions.length} onClick={goBack}><Undo2 size={14} /></button>
         </div>
         <div className="zoom-controls" role="group" aria-label="缩放控制">
           <button
@@ -688,13 +939,6 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
         )}
       </div>
 
-      <div
-        ref={stageRef}
-        className="pdf-stage"
-        role="region"
-        aria-label="论文连续滚动阅读区"
-        tabIndex={0}
-      >
         {(loading || error) && (
           <div
             className={`reader-status ${error ? "reader-status--error" : ""}`}
@@ -704,9 +948,20 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
             {error || "正在解析论文…"}
           </div>
         )}
+      <div className="pdf-reader-body">
+      {navigation && <PdfNavigationPanel key={paperKey} document={document} pages={indexedPages} mode={navigation} onClose={closeNavigation} onSearch={handleSearch} onDestination={openDestination} onExternal={openExternal} />}
+      <div
+        ref={stageRef}
+        className="pdf-stage"
+        role="region"
+        aria-label="论文连续滚动阅读区"
+        tabIndex={0}
+        onScroll={recordPosition}
+      >
         <div className="pdf-pages">
           {pageNumbers.map((pageNumber) => (
             <PdfPageView
+              highlights={highlights.filter((item) => item.page === pageNumber && !item.archivedAt)}
               key={`${paperKey}-${pageNumber}`}
               document={document!}
               pageNumber={pageNumber}
@@ -718,9 +973,14 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
               registerCanvas={registerCanvas}
               onSelection={handleSelection}
               onError={handleRenderError}
+              searchQuery={searchQuery}
+              searchTarget={searchTarget}
+              onSearchReady={handleSearchReady}
+              onLink={handleLink}
             />
           ))}
         </div>
+      </div>
       </div>
     </section>
   );

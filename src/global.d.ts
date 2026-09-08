@@ -8,17 +8,31 @@ import type {
   PaperRecord,
   PdfPageIndex,
   RateLimitInfo,
-  Recommendation,
+  RecommendationResult,
+  DownloadProgress,
   RecommendationPreview,
+  PaperSearchResult,
+  PaperArchiveStatus,
+  PaperCategory,
 } from "./types";
 
 declare global {
   interface Window {
     paperOcean: {
       runtime?: "web" | "electron" | "demo";
-      openPdf(): Promise<OpenedPaper | null>;
-      reopenPdf(path: string): Promise<OpenedPaper>;
-      openUrl(url: string): Promise<OpenedPaper>;
+      searchPapers(query: string): Promise<PaperSearchResult>;
+      resolvePaperSuggestion(id: string): Promise<{ arxivId?: string; sourceUrl?: string }>;
+      archive: {
+        status(): Promise<PaperArchiveStatus>;
+        retry(): Promise<PaperArchiveStatus>;
+        setCategory(paperId: string, category: PaperCategory | "auto"): Promise<PaperArchiveStatus>;
+        openFolder(): Promise<void>;
+      };
+      openPdf(expectedPaperId?: string): Promise<OpenedPaper | null>;
+      reopenPdf(path: string, expectedPaperId?: string): Promise<OpenedPaper>;
+      openUrl(url: string, requestId?: string): Promise<OpenedPaper>;
+      downloadStatus(id: string): Promise<DownloadProgress | null>;
+      cancelDownload(id: string): Promise<void>;
       openExternal(url: string): Promise<void>;
       setTheme(theme: "dark" | "light"): Promise<"dark" | "light">;
       saveContext(input: {
@@ -30,9 +44,13 @@ declare global {
         page: number;
         dataUrl: string;
       }): Promise<string>;
+      cachedPageImage(paperId: string, page: number): Promise<string | undefined>;
       prepareConversation(input: {
         scopeKey: string;
         papers: PaperRecord[];
+        question?: string;
+        currentPaperId?: string;
+        currentPage?: number;
       }): Promise<ConversationContext>;
       codex: {
         status(): Promise<CodexAccount>;
@@ -49,6 +67,7 @@ declare global {
           prompt: string;
           selectedText?: string;
           pageImagePath?: string;
+          pageImages?: Array<{ path: string; paperId: string; page: number }>;
           model?: CodexModel["id"];
           effort?: CodexModel["supportedEfforts"][number];
         }): Promise<{ turnId: string }>;
@@ -59,7 +78,9 @@ declare global {
         title: string;
         abstract?: string;
         arxivId?: string;
-      }): Promise<Recommendation[]>;
+        mode?: "recent" | "foundations";
+        refresh?: boolean;
+      }): Promise<RecommendationResult>;
       prepareRecommendationPreview(arxivId: string): Promise<RecommendationPreview>;
       saveRecommendationThumbnail(input: {
         arxivId: string;
@@ -68,6 +89,9 @@ declare global {
       library: {
         load(): Promise<LibraryState>;
         save(state: LibraryState): Promise<void>;
+        recover(): Promise<LibraryState>;
+        onBeforeClose?(listener: () => Promise<void>): () => void;
+        finishClose?(result: { saved: boolean; error?: string }): Promise<void>;
       };
     };
   }

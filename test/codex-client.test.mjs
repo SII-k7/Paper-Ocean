@@ -28,63 +28,30 @@ test("selected paper excerpts are losslessly split below the Codex context limit
   assert.ok(chunks.every((chunk) => Buffer.byteLength(chunk, "utf8") <= 800));
 });
 
-test("model catalog exposes only the three requested GPT-5.6 models", () => {
-  const models = normalizeModelCatalog({
-    data: [
-      {
-        id: "gpt-5.6-sol",
-        displayName: "GPT-5.6-Sol",
-        hidden: false,
-        isDefault: true,
-        defaultReasoningEffort: "low",
-        supportedReasoningEfforts: [
-          { reasoningEffort: "low" },
-          { reasoningEffort: "medium" },
-          { reasoningEffort: "ultra" },
-        ],
-      },
-      {
-        id: "gpt-5.6-terra",
-        displayName: "GPT-5.6-Terra",
-        hidden: false,
-        defaultReasoningEffort: "medium",
-        supportedReasoningEfforts: [{ reasoningEffort: "medium" }],
-      },
-      {
-        id: "gpt-5.6-luna",
-        displayName: "GPT-5.6-Luna",
-        hidden: false,
-        defaultReasoningEffort: "medium",
-        supportedReasoningEfforts: [
-          { reasoningEffort: "low" },
-          { reasoningEffort: "medium" },
-          { reasoningEffort: "max" },
-        ],
-      },
-      {
-        id: "gpt-5.5",
-        displayName: "GPT-5.5",
-        hidden: false,
-        defaultReasoningEffort: "medium",
-        supportedReasoningEfforts: [{ reasoningEffort: "medium" }],
-      },
-      {
-        id: "gpt-5.6-sol-hidden",
-        hidden: true,
-        defaultReasoningEffort: "low",
-        supportedReasoningEfforts: [{ reasoningEffort: "low" }],
-      },
-    ],
-  });
+test("model catalog keeps Luna and does not fall back to older models", () => {
+  const models = normalizeModelCatalog({data: [
+    {id: "gpt-5.6-luna", supportedReasoningEfforts: [{reasoningEffort:"max"}], defaultReasoningEffort:"max"},
+    {id: "gpt-5.6-sol", supportedReasoningEfforts: ["max"]},
+    {id: "gpt-5.6-luna", hidden:true, supportedReasoningEfforts:["max"]},
+  ]});
+  assert.deepEqual(models.map(model => model.id), ["gpt-5.6-luna"]);
+  assert.deepEqual(models[0].supportedEfforts, ["max"]);
+});
 
-  assert.deepEqual(models.map((model) => model.id), [
-    "gpt-5.6-sol",
-    "gpt-5.6-terra",
-    "gpt-5.6-luna",
-  ]);
-  assert.equal(models[0].defaultEffort, "low");
-  assert.deepEqual(models[2].supportedEfforts, ["low", "medium", "max"]);
-  assert.equal(models[2].supportedEfforts.includes("ultra"), false);
+test("reading requests override legacy settings with Luna max", async () => {
+  const {CodexClient} = await import("../electron/codex-client.mjs");
+  const client = new CodexClient(), calls=[];
+  client.start = async () => {};
+  client.models = async () => [{id:"gpt-5.6-luna",supportedEfforts:["max","high"],defaultEffort:"high"}];
+  client.request = async (method,params) => { calls.push({method,params}); return {thread:{id:"test-thread"},turn:{id:"test-turn"}}; };
+  await client.startThread({contextDir:".",title:"Fixture",model:"gpt-6-astra"});
+  await client.sendTurn({contextDir:".",threadId:"test-thread",prompt:"Read",model:"gpt-6-astra",effort:"medium"});
+  assert.equal(calls[0].params.model,"gpt-5.6-luna");
+  assert.equal(calls[1].params.model,"gpt-5.6-luna");
+  assert.equal(calls[1].params.effort,"max");
+  client.models = async () => [{id:"gpt-5.6-luna",supportedEfforts:["high"]}];
+  await assert.rejects(client.sendTurn({prompt:"Read"}), /Luna max/);
+  assert.equal(calls.length,2);
 });
 
 test("manual Codex executable path wins on macOS", async () => {
@@ -99,4 +66,75 @@ test("manual Codex executable path wins on macOS", async () => {
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });
   }
+});
+
+test("account status does not proactively refresh a token", async () => {
+  const client = new (await import("../electron/codex-client.mjs")).CodexClient();
+  let request;
+  client.start = async () => undefined;
+  client.request = async (method, params) => {
+    request = { method, params };
+    return { account: null, requiresOpenaiAuth: true };
+  };
+
+  assert.deepEqual(await client.account(), {
+    connected: false,
+    accountType: null,
+    planType: null,
+    codexPath: client.executable,
+  });
+  assert.deepEqual(request, {
+    method: "account/read",
+    params: { refreshToken: false },
+  });
+});
+
+test("ChatGPT login starts directly without waiting for account/read", async () => {
+  const client = new (await import("../electron/codex-client.mjs")).CodexClient();
+  const calls = [];
+  client.start = async () => calls.push("start");
+  client.account = async () => {
+    throw new Error("login must not wait for account/read");
+  };
+  client.request = async (method, params, timeoutMs) => {
+    calls.push({ method, params, timeoutMs });
+    return { type: "chatgpt", authUrl: "https://auth.openai.com/example", loginId: "login-1" };
+  };
+
+  const result = await client.login();
+  assert.equal(result.authUrl, "https://auth.openai.com/example");
+  assert.deepEqual(calls, [
+    "start",
+    {
+      method: "account/login/start",
+      params: {
+        type: "chatgpt",
+        useHostedLoginSuccessPage: true,
+        appBrand: "chatgpt",
+      },
+      timeoutMs: 10_000,
+    },
+  ]);
+});
+
+test("ChatGPT login restarts a wedged app-server once", async () => {
+  const client = new (await import("../electron/codex-client.mjs")).CodexClient();
+  let attempts = 0;
+  let stops = 0;
+  client.start = async () => undefined;
+  client.stop = async () => { stops += 1; };
+  client.request = async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      const error = new Error("account/login/start 请求超时");
+      error.code = "CODEX_REQUEST_TIMEOUT";
+      throw error;
+    }
+    return { type: "chatgpt", authUrl: "https://auth.openai.com/retry", loginId: "login-2" };
+  };
+
+  const result = await client.login();
+  assert.equal(result.authUrl, "https://auth.openai.com/retry");
+  assert.equal(attempts, 2);
+  assert.equal(stops, 1);
 });

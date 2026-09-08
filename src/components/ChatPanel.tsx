@@ -1,31 +1,47 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowDown, CheckCircle2, Quote, Send, Sparkles, Square } from "lucide-react";
 import MarkdownMessage from "./MarkdownMessage";
-import ModelReasoningPicker from "./ModelReasoningPicker";
+import useChatPosition from "../hooks/useChatPosition";
 import type {
   ChatMessage,
+  ChatPosition,
+  ConversationRecord,
   CodexAccount,
-  CodexModel,
   CodexSelection,
   PaperRecord,
   RateLimitInfo,
+  ReadingPreferences,
 } from "../types";
 
 type Props = {
   activePaper: PaperRecord | null;
   openPapers: PaperRecord[];
   scopeKey: string;
+  conversation?: ConversationRecord;
+  conversations: ConversationRecord[];
+  scopePapers: PaperRecord[];
+  onNewConversation(): void;
+  onRenameConversation(title: string): void;
+  preferences?: ReadingPreferences;
+  onPreferencesChange(preferences: ReadingPreferences): void;
   account: CodexAccount | null;
   rateLimits: RateLimitInfo | null;
   messages: ChatMessage[];
+  draft: string;
+  position?: ChatPosition;
+  onDraftChange(draft: string): void;
+  onPositionChange(position: ChatPosition): void;
+  onOpenEvidence(paperId: string, page: number): void;
+  onSaveNote(message: ChatMessage): void;
   selectedText: string;
   currentPage: number;
   busy: boolean;
   error?: string | null;
-  models: CodexModel[];
   modelSelection: CodexSelection | null;
+  modelError?: string | null;
+  onRetryModels(): void;
   onScopeChange(scopeKey: string): void;
-  onModelSelectionChange(selection: CodexSelection): void;
+  onSelectConversation(scopeKey: string): void;
   onLogin(): void;
   onSend(text: string): void;
   onStop(): void;
@@ -49,66 +65,67 @@ export default function ChatPanel({
   activePaper,
   openPapers,
   scopeKey,
+  conversation,
+  conversations,
+  scopePapers,
+  onNewConversation,
+  onRenameConversation,
+  preferences,
+  onPreferencesChange,
   account,
   rateLimits,
   messages,
+  draft: input,
+  position,
+  onDraftChange: setInput,
+  onPositionChange,
+  onOpenEvidence,
+  onSaveNote,
   selectedText,
   currentPage,
   busy,
   error,
-  models,
   modelSelection,
+  modelError,
+  onRetryModels,
   onScopeChange,
-  onModelSelectionChange,
+  onSelectConversation,
   onLogin,
   onSend,
   onStop,
 }: Props) {
-  const [input, setInput] = useState("");
   const [hasNewAnswer, setHasNewAnswer] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const followOutputRef = useRef(true);
-  const isAllScope = scopeKey === "all";
-  const scopePaperId = scopeKey.startsWith("paper:") ? scopeKey.slice(6) : undefined;
-  const scopePapers = useMemo(
-    () => (isAllScope ? openPapers : openPapers.filter((paper) => paper.id === scopePaperId)),
-    [isAllScope, openPapers, scopePaperId],
-  );
-  const scopeReady = scopePapers.length > 0 && scopePapers.every((paper) => paper.paperDir);
-  const prompts = isAllScope ? ALL_PROMPTS : SINGLE_PROMPTS;
+  const composingRef = useRef(false);
+  const previousMessagesRef = useRef(messages);
+  const [search, setSearch] = useState("");
+  const [foundIndex, setFoundIndex] = useState(0);
+  const { scrollRef, itemsRef, positionRef, remember, goToMessage, scrollToLatest: followLatest } = useChatPosition(messages, position, onPositionChange);
+  const isAllScope = scopePapers.length > 1 || conversation?.readOnly;
+  const scopePaperId = scopePapers.length === 1 ? scopePapers[0].id : undefined;
+  const readOnly = conversation?.readOnly || scopePapers.length !== conversation?.paperIds.length;
+  const scopeReady = !readOnly && scopePapers.length > 0 && scopePapers.every((paper) => paper.paperDir);
+  const prompts = preferences?.templates ?? (isAllScope ? ALL_PROMPTS : SINGLE_PROMPTS);
+  const depth = preferences?.depth ?? "deep";
 
-  const scrollToLatest = (behavior: ScrollBehavior = "smooth") => {
-    const node = scrollRef.current;
-    if (!node) return;
-    followOutputRef.current = true;
+  const scrollToLatest = () => {
+    followLatest();
     setHasNewAnswer(false);
-    node.scrollTo({ top: node.scrollHeight, behavior });
   };
 
   useEffect(() => {
-    if (!followOutputRef.current) {
+    const changed = previousMessagesRef.current !== messages;
+    previousMessagesRef.current = messages;
+    if (changed && !positionRef.current.followOutput) {
       if (messages.at(-1)?.role === "assistant") setHasNewAnswer(true);
       return;
     }
-    const frame = window.requestAnimationFrame(() => {
-      if (followOutputRef.current) scrollToLatest("auto");
-    });
-    return () => window.cancelAnimationFrame(frame);
   }, [messages]);
-
-  useEffect(() => {
-    followOutputRef.current = true;
-    setHasNewAnswer(false);
-    const frame = window.requestAnimationFrame(() => scrollToLatest("auto"));
-    return () => window.cancelAnimationFrame(frame);
-  }, [scopeKey]);
 
   const submit = () => {
     const value = input.trim();
-    if (!value || !scopePapers.length || busy || !modelSelection) return;
+    if (!value || readOnly || !scopePapers.length || busy || !modelSelection) return;
     onSend(value);
-    setInput("");
-    followOutputRef.current = true;
+    scrollToLatest();
   };
 
   const scopeDescription = isAllScope
@@ -120,12 +137,20 @@ export default function ChatPanel({
   const usage = rateLimits?.primary?.usedPercent;
   const indexedPages = scopePapers.reduce((sum, paper) => sum + (paper.pageCount ?? 0), 0);
   const latestMessage = messages.at(-1);
+  const questions = messages.filter((message) => message.role === "user");
+  const matches = search.trim() ? messages.filter((message) => message.text.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())) : [];
+  const visitMatch = (index: number) => {
+    if (!matches.length) return;
+    const bounded = (index + matches.length) % matches.length;
+    setFoundIndex(bounded);
+    goToMessage(matches[bounded].id);
+  };
   const announcement = busy
     ? "Codex 正在回答"
     : latestMessage?.role === "assistant" && !latestMessage.pending
       ? latestMessage.error
         ? "Codex 回答失败"
-        : latestMessage.text === "回答已停止。"
+        : latestMessage.interrupted || latestMessage.text === "回答已停止。"
           ? "Codex 回答已停止"
           : "Codex 回答完成"
       : "";
@@ -152,7 +177,7 @@ export default function ChatPanel({
               disabled={openPapers.length < 2}
               onClick={() => onScopeChange("all")}
             >
-              全部论文
+              多论文
             </button>
           </div>
         )}
@@ -161,6 +186,16 @@ export default function ChatPanel({
           {account?.connected ? `CODEX ${(account.planType ?? "PRO").toUpperCase()}` : "未连接"}
         </div>
       </header>
+
+      {!!conversations.length && <div className="conversation-controls">
+        <select aria-label="选择讨论" value={scopeKey} onChange={(event) => onSelectConversation(event.target.value)}>
+          {!conversation && <option value={scopeKey}>选择讨论</option>}
+          {conversations.map((item) => <option key={item.id} value={item.id}>{item.title} · {item.readOnly ? "历史" : `${item.paperIds.length} 篇`}</option>)}
+        </select>
+        <button type="button" onClick={onNewConversation} disabled={busy || (!scopePapers.length && !openPapers.length)}>新讨论</button>
+        {conversation && <input aria-label="讨论标题" value={conversation.title} onChange={(event) => onRenameConversation(event.target.value)} />}
+        <p>{conversation?.readOnly ? "旧记录没有保存完整论文集合，历史与草稿已保留。请用新讨论继续。" : readOnly ? "这次讨论绑定的论文有缺失，请恢复资料或新建讨论。" : `固定论文集合：${scopePapers.map((paper) => paper.title).join("、")}`}</p>
+      </div>}
 
       {usage !== undefined && (
         <div className="usage-strip" title="Codex 当前额度窗口使用情况" aria-label={`额度窗口已使用 ${Math.round(usage)}%`}>
@@ -182,7 +217,32 @@ export default function ChatPanel({
         <div className="selection-card">
           <span><Quote size={13} aria-hidden="true" /> 第 {currentPage} 页的选中文本</span>
           <p>{selectedText}</p>
-          <button type="button" onClick={() => onSend("请逐句解释我选中的内容，并说明它在全文论证中的作用。")}>解释这段</button>
+          <button type="button" disabled={readOnly || busy} onClick={() => onSend("请逐句解释我选中的内容，并说明它在全文论证中的作用。")}>解释这段</button>
+        </div>
+      )}
+
+      {!!messages.length && (
+        <div className="chat-navigation">
+          <select aria-label="跳转到问题" value="" onChange={(event) => goToMessage(event.target.value)}>
+            <option value="" disabled>问题导航 · {questions.length}</option>
+            {questions.map((message, index) => <option key={message.id} value={message.id}>{index + 1}. {message.text.slice(0, 80)}</option>)}
+          </select>
+          <div className="chat-search">
+            <input aria-label="搜索对话" placeholder="搜索对话" value={search} onChange={(event) => {
+              const query = event.target.value;
+              setSearch(query);
+              setFoundIndex(0);
+              const first = query.trim() && messages.find((message) => message.text.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+              if (first) goToMessage(first.id);
+            }} onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); visitMatch(foundIndex + (event.shiftKey ? -1 : 1)); }
+            }} />
+            {search && <>
+              <button type="button" aria-label="上一条搜索结果" disabled={!matches.length} onClick={() => visitMatch(foundIndex - 1)}>↑</button>
+              <button type="button" aria-label="下一条搜索结果" disabled={!matches.length} onClick={() => visitMatch(foundIndex + 1)}>↓</button>
+              <span role="status">{matches.length ? foundIndex + 1 : 0}/{matches.length}</span>
+            </>}
+          </div>
         </div>
       )}
 
@@ -193,18 +253,17 @@ export default function ChatPanel({
         aria-live="polite"
         aria-relevant="additions"
         onScroll={(event) => {
-          const node = event.currentTarget;
-          const nearBottom = node.scrollHeight - node.scrollTop - node.clientHeight < 84;
-          followOutputRef.current = nearBottom;
-          if (nearBottom) setHasNewAnswer(false);
+          remember();
+          if (positionRef.current.followOutput) setHasNewAnswer(false);
         }}
       >
+        <div ref={itemsRef} className="message-items">
         {!messages.length && (
           <div className="chat-welcome">
             <div className="chat-welcome__mark"><Sparkles size={23} strokeWidth={1.8} aria-hidden="true" /></div>
             <h3>{scopePapers.length ? "准备分析" : "先打开一篇论文"}</h3>
             <p>{scopePapers.length
-              ? `已载入 ${scopePapers.length} 篇论文、${indexedPages || "全部"} 页的全文上下文。当前页面只用于定位，不是阅读边界。`
+              ? `已载入 ${scopePapers.length} 篇论文、${indexedPages || "全部"} 页的全文索引。提问时会提供全文或相关页面，并显示实际覆盖范围。`
               : "打开后可以直接询问方法、公式、实验和相关工作。"}</p>
             {scopePapers.length > 0 && (
               <div className={`context-status ${scopeReady ? "context-status--ready" : ""}`} aria-live="polite">
@@ -214,22 +273,28 @@ export default function ChatPanel({
             )}
             {!!scopePapers.length && (
               <div className="quick-prompts">
-                {prompts.map((prompt) => (
-                  <button type="button" key={prompt} onClick={() => onSend(prompt)} disabled={busy || !modelSelection}>{prompt}</button>
+                {prompts.map((prompt, index) => prompt.trim() && (
+                  <button type="button" key={index} onClick={() => onSend(prompt)} disabled={readOnly || busy || !modelSelection}>{prompt}</button>
                 ))}
               </div>
             )}
           </div>
         )}
         {messages.map((message) => (
-          <article key={message.id} className={`message message--${message.role} ${message.error ? "message--error" : ""}`}>
-            <header>{message.role === "user" ? "你" : "Codex"}{message.page ? ` · 第 ${message.page} 页` : ""}</header>
+          <article key={message.id} data-message-id={message.id} className={`message message--${message.role} ${message.error ? "message--error" : ""} ${search && matches[foundIndex]?.id === message.id ? "message--match" : ""}`}>
+            <header>{message.role === "user" ? "你" : "Codex"}{message.page && (message.paperId || scopePaperId) ? <button type="button" className="evidence-link" onClick={() => onOpenEvidence(message.paperId || scopePaperId!, message.page!)}>第 {message.page} 页 ↗</button> : message.page ? ` · 第 ${message.page} 页` : ""}</header>
+            {message.contextCoverage && <small className="context-coverage" title="这里只统计已提取的文字。扫描页和图表的视觉内容以本轮附带页图为准，不包含自动 OCR。">{message.contextCoverage.complete ? "已提取文字" : "相关文字／节选"} · {message.contextCoverage.providedPages}/{message.contextCoverage.totalPages} 页</small>}
+            {!!message.pageImages?.length && <small className="context-coverage">页图证据：{message.pageImages.map((item) => <button type="button" className="evidence-link" key={`${item.paperId}:${item.page}`} onClick={() => onOpenEvidence(item.paperId, item.page)}>{scopePapers.length > 1 ? `${scopePapers.find((paper) => paper.id === item.paperId)?.title.slice(0, 14) ?? "论文"} · ` : ""}第 {item.page} 页</button>)}</small>}
             {message.role === "assistant" && message.text
-              ? <MarkdownMessage text={message.text} />
-              : <div className="message__content">{message.text || (message.pending ? "正在通读全文…" : "")}</div>}
+              ? <MarkdownMessage text={message.text} onOpenEvidence={onOpenEvidence} />
+              : <div className="message__content">{message.text || (message.pending ? "正在核对原文…" : "")}</div>}
             {message.pending && <span className="typing-indicator" aria-label="Codex 正在回答"><i /><i /><i /></span>}
+            {message.interrupted && <small className="context-coverage" role="status">回答已停止，以上为已生成的部分内容。</small>}
+            {message.error && message.text && <small className="context-coverage" role="status">回答未完成；已保留现有内容，可重新发送问题。</small>}
+            {message.role === "assistant" && message.text && !message.pending && <button type="button" className="message-save-note" onClick={() => onSaveNote(message)}>保存为笔记</button>}
           </article>
         ))}
+        </div>
       </div>
 
       <div className="sr-only" aria-live="polite" aria-atomic="true">
@@ -245,32 +310,46 @@ export default function ChatPanel({
       {error && <div className="inline-error" role="alert">{error}</div>}
 
       <div className="chat-composer">
+        {modelError && <div className="model-connection-status" role="status"><span>{modelError}</span><button type="button" onClick={onRetryModels}>重试连接</button></div>}
+        <div className="reading-preferences">
+          <label>回答深度 <select aria-label="回答深度" value={depth} onChange={(event) => onPreferencesChange({ ...preferences, depth: event.target.value as ReadingPreferences["depth"] })}>
+            <option value="brief">简短</option><option value="balanced">标准</option><option value="deep">深入</option>
+          </select></label>
+          <details className="prompt-settings">
+            <summary>提问模板</summary>
+            <div className="prompt-settings__body">
+              {prompts.map((prompt, index) => <div key={index}>
+                <textarea aria-label={`提问模板 ${index + 1}`} rows={2} maxLength={8000} value={prompt} onChange={(event) => onPreferencesChange({ depth, templates: prompts.map((text, offset) => offset === index ? event.target.value : text) })} />
+                <button type="button" disabled={!prompt.trim()} onClick={() => setInput(input.trim() ? `${input}\n\n${prompt}` : prompt)}>填入问题</button>
+              </div>)}
+              <button type="button" disabled={prompts.length >= 8} onClick={() => onPreferencesChange({ depth, templates: [...prompts, ""] })}>新增模板</button>
+              <button type="button" onClick={() => onPreferencesChange({ depth })}>恢复默认模板</button>
+            </div>
+          </details>
+        </div>
         <textarea
           value={input}
           onChange={(event) => setInput(event.target.value)}
+          onCompositionStart={() => { composingRef.current = true; }}
+          onCompositionEnd={() => { composingRef.current = false; }}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
+            if (event.key === "Enter" && !event.shiftKey && !composingRef.current && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) {
               event.preventDefault();
               submit();
             }
           }}
           placeholder={scopePapers.length ? `询问${scopeDescription}的完整内容…` : "请先打开论文"}
-          disabled={!scopePapers.length}
+          disabled={!scopePapers.length && !conversation?.readOnly}
           rows={3}
           aria-label="向 Codex 提问"
         />
         <div className="composer-toolbar">
-          <ModelReasoningPicker
-            models={models}
-            selection={modelSelection}
-            busy={busy}
-            onChange={onModelSelectionChange}
-          />
+          <span className="reading-model-label" title={modelSelection ? "阅读模型固定为 GPT-5.6 Luna，思考强度 max" : "当前模型暂不可用，请检查 Codex 连接"}>GPT-5.6 Luna · max{!modelSelection && " · 暂不可用"}</span>
           <button
             type="button"
             className={`send-button${busy ? " send-button--stop" : ""}`}
             onClick={busy ? onStop : submit}
-            disabled={!busy && (!scopePapers.length || !input.trim() || !modelSelection)}
+            disabled={!busy && (readOnly || !scopePapers.length || !input.trim() || !modelSelection)}
             aria-label={busy ? "停止回答" : "发送问题"}
             title={busy ? "停止回答" : "发送问题"}
           >

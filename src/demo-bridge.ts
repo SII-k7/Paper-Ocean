@@ -11,21 +11,22 @@ async function blobToBase64(blob: Blob) {
   });
 }
 
-async function demoPaper(source = ""): Promise<OpenedPaper> {
+async function demoPaper(): Promise<OpenedPaper> {
   const response = await fetch(DEMO_PDF_URL);
   if (!response.ok) throw new Error("演示论文尚未准备好");
-  const recommendation = DEMO_RECOMMENDATIONS.find((paper) => source.includes(paper.arxivId ?? "--"));
-  const id = recommendation ? `demo-${recommendation.paperId}` : "demo-attention-is-all-you-need";
+  const blob = await response.blob();
+  const hash = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+  const id = Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, 24);
   return {
     id,
-    name: `${recommendation?.arxivId ?? "1706.03762"}.pdf`,
+    name: "1706.03762.pdf",
     path: `browser-demo/${id}.pdf`,
-    sourceUrl: `https://arxiv.org/abs/${recommendation?.arxivId ?? "1706.03762"}`,
-    arxivId: recommendation?.arxivId ?? "1706.03762",
-    title: recommendation?.title ?? "Attention Is All You Need",
-    abstract: recommendation?.abstract ?? "The Transformer replaces recurrence and convolutions with attention mechanisms for sequence transduction.",
+    sourceUrl: "https://arxiv.org/abs/1706.03762",
+    arxivId: "1706.03762",
+    title: "Attention Is All You Need（演示）",
+    abstract: "The Transformer replaces recurrence and convolutions with attention mechanisms for sequence transduction.",
     openedAt: Date.now(),
-    dataBase64: await blobToBase64(await response.blob()),
+    dataBase64: await blobToBase64(blob),
   };
 }
 
@@ -73,12 +74,12 @@ const DEMO_RECOMMENDATIONS: Recommendation[] = [
 
 const DEMO_MODELS: CodexModel[] = [
   {
-    id: "gpt-5.6-sol",
-    displayName: "GPT-5.6-Sol",
+    id: "gpt-6-astra",
+    displayName: "GPT-6 Astra",
     description: "旗舰能力，适合严谨推导与深度论文分析。",
-    defaultEffort: "low",
+    defaultEffort: "medium",
     supportedEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
-    isDefault: true,
+    isDefault: false,
   },
   {
     id: "gpt-5.6-terra",
@@ -92,9 +93,9 @@ const DEMO_MODELS: CodexModel[] = [
     id: "gpt-5.6-luna",
     displayName: "GPT-5.6-Luna",
     description: "响应最快，适合快速浏览与提取。",
-    defaultEffort: "medium",
+    defaultEffort: "max",
     supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
-    isDefault: false,
+    isDefault: true,
   },
 ];
 
@@ -112,9 +113,19 @@ export function installBrowserDemoBridge() {
 
   window.paperOcean = {
     runtime: "demo",
+    searchPapers: async () => ({ items: [], error: "演示模式仅搜索本地示例" }),
+    resolvePaperSuggestion: async () => ({}),
+    archive: {
+      status: async () => ({ directory: "演示模式不写入磁盘", busy: false, entries: [], failures: [] }),
+      retry: async () => ({ directory: "演示模式不写入磁盘", busy: false, entries: [], failures: [] }),
+      setCategory: async () => ({ directory: "演示模式不写入磁盘", busy: false, entries: [], failures: [] }),
+      openFolder: async () => undefined,
+    },
     openPdf: demoPaper,
     reopenPdf: demoPaper,
     openUrl: demoPaper,
+    downloadStatus: async () => null,
+    cancelDownload: async () => undefined,
     openExternal: async () => undefined,
     setTheme: async (theme) => theme,
     saveContext: async ({ paper }) => ({
@@ -122,6 +133,7 @@ export function installBrowserDemoBridge() {
       contextPath: `browser-demo/${paper.id}/PAPER_CONTEXT.md`,
     }),
     savePageImage: async ({ paperId, page }) => `browser-demo/${paperId}/page-${page}.png`,
+    cachedPageImage: async () => undefined,
     prepareConversation: async ({ papers }) => ({
       contextDir: "browser-demo/research-context",
       entries: papers.map((paper) => ({
@@ -175,11 +187,12 @@ export function installBrowserDemoBridge() {
         return () => listeners.delete(listener);
       },
     },
-    recommendations: async () => DEMO_RECOMMENDATIONS,
+    recommendations: async () => ({ items: DEMO_RECOMMENDATIONS, fetchedAt: Date.now(), cache: "fresh", pending: false }),
     prepareRecommendationPreview: async () => ({ status: "render", pdfUrl: DEMO_PDF_URL }),
     saveRecommendationThumbnail: async ({ dataUrl }) => dataUrl,
     library: {
       load: async () => savedLibrary,
+      recover: async () => savedLibrary,
       save: async (state) => { savedLibrary = state; },
     },
   };

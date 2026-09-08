@@ -2,13 +2,24 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("paperOcean", {
   runtime: "electron",
-  openPdf: () => ipcRenderer.invoke("paper:open"),
-  reopenPdf: (path) => ipcRenderer.invoke("paper:reopen", path),
-  openUrl: (url) => ipcRenderer.invoke("paper:open-url", url),
+  searchPapers: (query) => ipcRenderer.invoke("papers:search", query),
+  resolvePaperSuggestion: (id) => ipcRenderer.invoke("papers:resolve-suggestion", id),
+  archive: {
+    status: () => ipcRenderer.invoke("archive:status"),
+    retry: () => ipcRenderer.invoke("archive:retry"),
+    setCategory: (paperId, category) => ipcRenderer.invoke("archive:set-category", { paperId, category }),
+    openFolder: () => ipcRenderer.invoke("archive:open-folder"),
+  },
+  openPdf: (expectedId) => ipcRenderer.invoke("paper:open", expectedId),
+  reopenPdf: (path, expectedId) => ipcRenderer.invoke("paper:reopen", path, expectedId),
+  openUrl: (url, requestId) => ipcRenderer.invoke("paper:open-url", url, requestId),
+  downloadStatus: (id) => ipcRenderer.invoke("paper:download-status", id),
+  cancelDownload: (id) => ipcRenderer.invoke("paper:download-cancel", id),
   openExternal: (url) => ipcRenderer.invoke("app:open-external", url),
   setTheme: (theme) => ipcRenderer.invoke("app:set-theme", theme),
   saveContext: (input) => ipcRenderer.invoke("paper:save-context", input),
   savePageImage: (input) => ipcRenderer.invoke("paper:save-page-image", input),
+  cachedPageImage: (paperId, page) => ipcRenderer.invoke("paper:cached-page-image", { paperId, page }),
   prepareConversation: (input) => ipcRenderer.invoke("paper:prepare-conversation", input),
   codex: {
     status: () => ipcRenderer.invoke("codex:status"),
@@ -36,5 +47,12 @@ contextBridge.exposeInMainWorld("paperOcean", {
   library: {
     load: () => ipcRenderer.invoke("library:load"),
     save: (state) => ipcRenderer.invoke("library:save", state),
+    recover: () => ipcRenderer.invoke("library:recover"),
+    onBeforeClose: (listener) => {
+      const handler = () => { void listener(); };
+      ipcRenderer.on("library:before-close", handler);
+      return () => ipcRenderer.removeListener("library:before-close", handler);
+    },
+    finishClose: (result) => ipcRenderer.invoke("library:finish-close", result),
   },
 });
