@@ -10,7 +10,7 @@ import {
   safeStorage,
   shell,
 } from "electron";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -177,7 +177,8 @@ function createWindow(resolvedTheme = nativeTheme.shouldUseDarkColors ? "dark" :
     event.preventDefault();
     if (closing.pending) return;
     closing.pending = true;
-    window.webContents.send("library:before-close");
+    closing.requestId = randomUUID();
+    window.webContents.send("library:before-close", closing.requestId);
     closing.timer = setTimeout(async () => {
       if (window.isDestroyed() || !closing.pending) return;
       closing.pending = false;
@@ -366,7 +367,8 @@ export async function prepareForUpdate() {
       closing.saveOnly = undefined;
       reject(new Error("阅读记录尚未完成保存，已停止更新，请稍后重试。"));
     }, 15000);
-    window.webContents.send("library:before-close");
+    closing.requestId = randomUUID();
+    window.webContents.send("library:before-close", closing.requestId);
   })));
   await flushLibraryWrites(userDataPath("library.json"));
   await paperArchive?.flush();
@@ -459,7 +461,7 @@ function registerIpc() {
   ipcMain.handle("library:finish-close", async (event, result) => {
     const window = BrowserWindow.fromWebContents(event.sender);
     const closing = window && closeRequests.get(window);
-    if (!window || !closing?.pending) return;
+    if (!window || !closing?.pending || result?.requestId !== closing.requestId) return;
     clearTimeout(closing.timer);
     try {
       if (result?.saved !== true) throw new Error(String(result?.error || "阅读记录尚未保存"));

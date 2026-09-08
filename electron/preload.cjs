@@ -59,7 +59,7 @@ contextBridge.exposeInMainWorld("paperOcean", {
     save: (state) => ipcRenderer.invoke("library:save", state),
     recover: () => ipcRenderer.invoke("library:recover"),
     onBeforeClose: (listener) => {
-      const handler = () => { void listener(); };
+      const handler = (_event, requestId) => { void listener(requestId); };
       ipcRenderer.on("library:before-close", handler);
       return () => ipcRenderer.removeListener("library:before-close", handler);
     },

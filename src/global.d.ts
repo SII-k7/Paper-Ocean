@@ -100,8 +100,8 @@ declare global {
         load(): Promise<LibraryState>;
         save(state: LibraryState): Promise<void>;
         recover(): Promise<LibraryState>;
-        onBeforeClose?(listener: () => Promise<void>): () => void;
-        finishClose?(result: { saved: boolean; error?: string }): Promise<void>;
+        onBeforeClose?(listener: (requestId: string) => Promise<void>): () => void;
+        finishClose?(result: { saved: boolean; error?: string; requestId: string }): Promise<void>;
       };
     };
   }

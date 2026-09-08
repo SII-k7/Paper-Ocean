@@ -51,7 +51,7 @@ export default function useLibrary() {
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     document.addEventListener("visibilitychange", onVisibility);
-    const unsubscribe = window.paperOcean.library.onBeforeClose?.(async () => {
+    const unsubscribe = window.paperOcean.library.onBeforeClose?.(async requestId => {
       try {
         const tasks: Promise<unknown>[] = [];
         window.dispatchEvent(new CustomEvent("paper-ocean-before-close", {
@@ -60,9 +60,9 @@ export default function useLibrary() {
         await Promise.all(tasks);
         window.dispatchEvent(new Event("paper-ocean-before-save"));
         await flush();
-        await window.paperOcean.library.finishClose?.({ saved: true });
+        await window.paperOcean.library.finishClose?.({ saved: true, requestId });
       } catch (error) {
-        await window.paperOcean.library.finishClose?.({ saved: false, error: error instanceof Error ? error.message : String(error) });
+        await window.paperOcean.library.finishClose?.({ saved: false, requestId, error: error instanceof Error ? error.message : String(error) });
       }
     });
     return () => {
