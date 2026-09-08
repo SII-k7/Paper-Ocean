@@ -6,6 +6,8 @@ v1.1.0 预览。Windows、Ubuntu、macOS 共用 React 界面、PDF 阅读、Code
 
 ## 本轮验证记录
 
+最终代码 `9e6c8c2`：**110 项测试通过**，包括合并后容量限制与确定性并发冲突验证；[Ubuntu 双版本最终包](https://github.com/SII-k7/Paper-Ocean/actions/runs/34221955991)和 [Windows 最终包](https://github.com/SII-k7/Paper-Ocean/actions/runs/34221956016)均构建成功。下载构建页 Artifacts 中的压缩包并解压后安装。以下链接保留此前实机截图验收记录。
+
 - [Ubuntu 22.04 / 24.04 构建与安装验证](https://github.com/SII-k7/Paper-Ocean/actions/runs/34220528714)：两项通过。每个平台 109 项自动测试通过；deb 实际安装后启动窗口，导入测试 PDF、渲染画布、建立全文索引、显示看过的论文，验证预加载桥接和设置入口。中文字体依赖安装后截图确认无方框字。
 - [Windows 配套包](https://github.com/SII-k7/Paper-Ocean/actions/runs/34220940981)：109 项测试、类型检查与打包通过；本机另用独立桌面资料库验证了论文池筛选、设置错误提示，以及完全没有本地 PDF 时显示远端“问过”条目。
 - 双客户端同步测试通过真实 HTTP 传输模拟条件写入服务，验证并发写入冲突重试、离线后重启补齐与字段白名单。测试使用隔离目录与虚拟论文，不上传用户阅读记录。
