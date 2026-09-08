@@ -40,5 +40,6 @@ export function mergePools(...pools) {
     rows.set(next.id, { ...winner,
       seenAt: Math.max(previous.seenAt, next.seenAt), askedAt: Math.max(previous.askedAt, next.askedAt) });
   }
+  if (rows.size > 20000) throw new Error("合并后的论文池超过 20,000 条，未覆盖已有记录");
   return { version: 1, papers: [...rows.values()].sort((a,b) => a.id.localeCompare(b.id)) };
 }

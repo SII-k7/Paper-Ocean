@@ -81,7 +81,7 @@ export function createPoolSync({ directory, loadLibrary, encodeSecret, decodeSec
       const secret = input.password ? await encodeSecret(String(input.password)) : old?.url === url && old?.username === username ? old.secret : null;
       if (!secret) throw new Error("请填写 WebDAV 应用密码");
       await atomicJson(configFile, { url, username, secret });
-    }); return run(); },
+    }); if (inFlight) await inFlight.catch(()=>{}); return run(); },
     schedule: () => { clearTimeout(timer); timer = setTimeout(()=>void run().catch(()=>{}), 2000); timer.unref?.(); },
     stop: async () => { clearTimeout(timer); await queue.catch(()=>{}); },
   };

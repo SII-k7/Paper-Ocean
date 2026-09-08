@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [ubuntu-paper-pool]
-    paths: [.github/workflows/windows-build.yml]
+    paths: [electron/**, src/**, test/**, scripts/**, 'package*.json', vite.config.ts, .github/workflows/windows-build.yml]
 permissions:
   contents: read
 jobs:

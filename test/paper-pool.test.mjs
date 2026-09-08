@@ -26,12 +26,19 @@ test("pool merge is idempotent, order independent and preserves offline seen/ask
   assert.deepEqual(mergePools(first,first),first);
   assert.equal(mergePools(first,third).papers[0].askedAt,200);
 });
+test("combined pool limit is checked before an oversized merge can be persisted", () => {
+  const papers=Array.from({length:20000},(_,index)=>({id:index.toString(16).padStart(24,'0'),title:'Paper',seenAt:1}));
+  assert.throws(()=>mergePools({version:1,papers},poolFromLibrary(library(a))),/20,000/);
+});
 test("two isolated devices sync bidirectionally across HTTP with ETag races, offline recovery and restarts", async () => {
   let value, revision = 0, offline = false, conflicts = 0;
+  const firstReads=[];
   const server = createServer(async (req,res) => {
     if(offline) {res.writeHead(503).end(); return;}
     if(req.headers.authorization !== 'Basic '+Buffer.from('user:secret').toString('base64')) {res.writeHead(401).end();return;}
     if(req.method === "GET") {
+      // Release both initial reads together to force a deterministic create race.
+      if (!revision && firstReads.length < 2) { firstReads.push(res); if(firstReads.length===2) for(const response of firstReads) response.writeHead(404).end(); return; }
       res.writeHead(value ? 200 : 404,value ? {ETag:`"${revision}"`,"Content-Type":"application/json"} : {}); res.end(value || "");return;
     }
     let body=""; for await(const chunk of req) body += chunk;
