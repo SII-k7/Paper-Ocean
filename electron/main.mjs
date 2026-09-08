@@ -155,6 +155,7 @@ function createWindow(resolvedTheme = nativeTheme.shouldUseDarkColors ? "dark" :
     show: false,
     backgroundColor: initialColors.background,
     title: "Paper Ocean",
+    icon: path.join(__dirname, "../build/icon.png"),
     autoHideMenuBar: true,
     ...platformWindowOptions(resolvedTheme),
     webPreferences: {

@@ -17,7 +17,7 @@ export default function AboutPanel() {
     <dialog className="about-panel" ref={dialog} aria-labelledby="about-heading" onClick={(event) => { if (event.target === dialog.current) { const box = dialog.current.getBoundingClientRect(); if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.current.close(); } }}>
       <h2 id="about-heading">Paper Ocean <small>v{version}</small></h2>
       <p>沉浸阅读、讨论与研究笔记。</p>
-      <p>点击检查时才访问 GitHub。更新由你决定何时下载和安装。</p>
+      <p>检查更新后，前往发布页面下载安装包。当前版本需要手动安装或替换应用。</p>
       <div className="about-actions"><button type="button" disabled={busy} onClick={() => void check()}>{busy ? "正在检查…" : "检查更新"}</button><button type="button" onClick={() => void window.paperOcean.openExternal(result?.url || RELEASES_URL)}>查看发布页面</button></div>
       {result && <p role="status">{result.newer ? `发现新版本 v${result.version}` : `最新正式版本为 v${result.version}，当前无需更新。`}<br /><small>上次检查：{new Date(result.checkedAt).toLocaleString()}</small></p>}
       {error && <p role="status">{error}</p>}
