@@ -14,51 +14,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  linux:
+    name: Ubuntu packages and smoke tests
+    uses: ./.github/workflows/linux-preview.yml
+
   windows:
     name: Windows x64 portable
-    runs-on: windows-2022
-    timeout-minutes: 35
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install locked dependencies
-        run: npm ci
-
-      - name: Verify application
-        run: |
-          npm test
-          npm run check
-
-      - name: Build portable executable
-        run: npm run dist:win
-        env:
-          NODE_USE_SYSTEM_CA: "1"
-
-      - name: Verify portable artifact name
-        shell: pwsh
-        run: |
-          $version = node -p "require('./package.json').version"
-          $artifact = "release/Paper-Ocean-$version-win-x64.exe"
-          if (-not (Test-Path -LiteralPath $artifact)) {
-            throw "Expected portable artifact was not created: $artifact"
-          }
-          Get-Item -LiteralPath $artifact | Select-Object Name, Length
-
-      - name: Upload Windows artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: paper-ocean-windows-x64
-          path: release/*.exe
-          if-no-files-found: error
-          retention-days: 30
+    uses: ./.github/workflows/windows-build.yml
 
   macos:
     name: macOS universal unsigned preview
@@ -122,6 +84,7 @@ jobs:
     needs:
       - windows
       - macos
+      - linux
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -141,6 +104,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: paper-ocean-*
           merge-multiple: true
 
       - name: Generate SHA-256 checksums

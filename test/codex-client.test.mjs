@@ -8,7 +8,19 @@ import {
   normalizeModelCatalog,
   resolveCodexExecutable,
   splitAdditionalContextValue,
+  codexSpawnEnvironment,
 } from "../electron/codex-client.mjs";
+
+test("Linux desktop discovers user-local Codex and adds its directory to the child PATH", async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "codex-linux-"));
+  try {
+    const executable = path.join(home,".local","bin","codex");
+    await fs.mkdir(path.dirname(executable),{recursive:true}); await fs.writeFile(executable,"fixture");
+    assert.equal(resolveCodexExecutable({}, {platform:"linux",homeDir:home}),executable);
+    assert.ok(codexSpawnEnvironment(executable,{PATH:"/usr/bin"},"linux").PATH.includes(path.dirname(executable)));
+    assert.deepEqual(codexSpawnEnvironment(executable,{PATH:"original"},"win32"),{PATH:"original"});
+  } finally {await fs.rm(home,{recursive:true,force:true});}
+});
 
 test("Paper Ocean starts Codex app-server on the stable HTTP streaming transport", () => {
   assert.deepEqual(codexAppServerArgs(), [

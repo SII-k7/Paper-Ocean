@@ -1,9 +1,9 @@
 {
   "name": "paper-ocean",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "author": "Paper Ocean",
-  "description": "A local-first paper reader for Windows and macOS, powered by a ChatGPT Codex subscription.",
+  "description": "A local-first paper reader for Windows, macOS and Ubuntu, powered by a ChatGPT Codex subscription.",
   "homepage": "https://github.com/SII-k7/Paper-Ocean#readme",
   "repository": {
     "type": "git",
@@ -25,7 +25,8 @@
     "smoke:quality": "node scripts/smoke-answer-quality.mjs",
     "dist": "npm run dist:win",
     "dist:win": "npm run build && electron-builder --win portable --x64 --publish never",
-    "dist:mac": "npm run build && electron-builder --mac dmg --universal --publish never"
+    "dist:mac": "npm run build && electron-builder --mac dmg --universal --publish never",
+    "dist:linux": "npm run build && electron-builder --linux deb AppImage --x64 --publish never"
   },
   "dependencies": {
     "fflate": "0.8.3",
@@ -62,6 +63,20 @@
       "package.json",
       "!**/node_modules/**/*"
     ],
+    "linux": {
+      "target": [
+        "deb",
+        "AppImage"
+      ],
+      "category": "Education",
+      "icon": "build/icon.png",
+      "executableName": "paper-ocean",
+      "maintainer": "Paper Ocean <laozhu0626@gmail.com>",
+      "artifactName": "Paper-Ocean-${version}-linux-${arch}.${ext}"
+    },
+    "deb": {
+      "depends": ["libgtk-3-0", "libnotify4", "libnss3", "libxss1", "libxtst6", "xdg-utils", "libatspi2.0-0", "libuuid1", "libsecret-1-0", "fonts-noto-cjk"]
+    },
     "win": {
       "target": [
         "portable"

@@ -1,5 +1,5 @@
 :root {
-  font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "Noto Sans CJK SC", system-ui, sans-serif;
   color: #eef2f6;
   background: #0d1015;
   font-synthesis: none;
@@ -875,3 +875,13 @@ html.theme-transitioning :where(
   .quick-prompts button:active:not(:disabled) { transform: translateY(0); }
 }
 @media (max-width: 1250px) { .paper-search-shortcut { display: none; } }
+.pool-tabs { display: flex; gap: 8px; padding: 8px 22px; border-bottom: 1px solid var(--line); }
+.pool-tabs button[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
+.paper-pool { min-height: 0; overflow: auto; }
+.pool-intro, .pool-status, .pool-settings { margin: 12px 22px !important; }
+.pool-settings form { display: grid; gap: 12px; max-width: 650px; padding: 8px 0; }
+.pool-settings label { display: grid; grid-template-columns: 120px 1fr; align-items: center; gap: 12px; }
+.pool-settings input { min-width: 0; width: 100%; }
+.pool-tags, .pool-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.pool-tags span { padding: 3px 7px; background: var(--accent-soft); color: var(--accent); border-radius: 5px; font-size: 11px; }
+.paper-pool h3 { margin: 0; font-size: 14px; overflow-wrap: anywhere; }

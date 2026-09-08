@@ -1,0 +1,39 @@
+name: Windows preview
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [electron/**, src/**, test/**, scripts/**, 'package*.json', vite.config.ts, .github/workflows/windows-build.yml]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run check
+      - run: npm run dist:win
+        env:
+          NODE_USE_SYSTEM_CA: "1"
+      - name: Verify portable artifact
+        shell: pwsh
+        run: |
+          $version = node -p "require('./package.json').version"
+          $artifact = "release/Paper-Ocean-$version-win-x64.exe"
+          if (-not (Test-Path -LiteralPath $artifact)) { throw "Expected portable artifact was not created" }
+          Get-Item -LiteralPath $artifact | Select-Object Name, Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paper-ocean-windows-x64
+          path: release/*.exe
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 30

@@ -7,6 +7,7 @@ import {
   net,
   protocol,
   screen,
+  safeStorage,
   shell,
 } from "electron";
 import { createHash } from "node:crypto";
@@ -37,6 +38,7 @@ import { windowsSystemFetch } from "./windows-fetch.mjs";
 import { validateConversationPapers } from "./conversations.mjs";
 import { createPaperSearch } from "./paper-search.mjs";
 import { createPaperArchive, defaultArchiveDirectory } from "./paper-archive.mjs";
+import { createPoolSync } from "./pool-sync.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APP_ID = "io.github.siik7.paperocean";
@@ -352,6 +354,21 @@ function checkedCodexInput(input, { image = false } = {}) {
 }
 
 function registerIpc() {
+  const pool = createPoolSync({
+    directory: app.getPath("userData"), loadLibrary: () => loadLibrary(userDataPath("library.json")),
+    fetcher: (url, options) => net.fetch(url, options),
+    encodeSecret: secret => {
+      if (!safeStorage.isEncryptionAvailable() || (process.platform === "linux" && safeStorage.getSelectedStorageBackend() === "basic_text")) throw new Error("系统密钥环不可用，请启用系统密码钥匙串后保存同步密码");
+      return safeStorage.encryptString(secret).toString("base64");
+    },
+    decodeSecret: encrypted => safeStorage.decryptString(Buffer.from(encrypted, "base64")),
+  });
+  ipcMain.handle("pool:status", () => pool.status());
+  ipcMain.handle("pool:sync", () => pool.run());
+  ipcMain.handle("pool:configure", (_event, input) => pool.configure(input));
+  const poolTimer = setInterval(() => pool.schedule(), 60000); poolTimer.unref();
+  pool.schedule();
+  app.once("will-quit", () => { clearInterval(poolTimer); void pool.stop(); });
   paperArchive = createPaperArchive({
     directory: defaultArchiveDirectory(), metadataFile: userDataPath("paper-archive.json"),
     sourceForPaper: async (paper) => {
@@ -414,7 +431,7 @@ function registerIpc() {
   ipcMain.handle("app:set-theme", (_event, theme) => setApplicationTheme(theme));
 
   ipcMain.handle("library:load", async () => { const state = await loadLibrary(userDataPath("library.json")); void paperArchive.schedule(state); return state; });
-  ipcMain.handle("library:save", async (_event, state) => { await saveLibrary(userDataPath("library.json"), state); void paperArchive.schedule(await loadLibrary(userDataPath("library.json"))); });
+  ipcMain.handle("library:save", async (_event, state) => { await saveLibrary(userDataPath("library.json"), state); pool.schedule(); void paperArchive.schedule(await loadLibrary(userDataPath("library.json"))); });
   ipcMain.handle("library:recover", async () => { const state = await recoverLibrary(userDataPath("library.json")); void paperArchive.schedule(state, true); return state; });
   ipcMain.handle("library:finish-close", async (event, result) => {
     const window = BrowserWindow.fromWebContents(event.sender);

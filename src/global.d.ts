@@ -20,6 +20,11 @@ declare global {
   interface Window {
     paperOcean: {
       runtime?: "web" | "electron" | "demo";
+      pool?: {
+        status(): Promise<import("./types").PoolState>;
+        sync(): Promise<import("./types").PoolState>;
+        configure(input: { url: string; username: string; password?: string } | null): Promise<import("./types").PoolState>;
+      };
       searchPapers(query: string): Promise<PaperSearchResult>;
       resolvePaperSuggestion(id: string): Promise<{ arxivId?: string; sourceUrl?: string }>;
       archive: {

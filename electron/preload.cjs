@@ -2,6 +2,11 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("paperOcean", {
   runtime: "electron",
+  pool: {
+    status: () => ipcRenderer.invoke("pool:status"),
+    sync: () => ipcRenderer.invoke("pool:sync"),
+    configure: input => ipcRenderer.invoke("pool:configure", input),
+  },
   searchPapers: (query) => ipcRenderer.invoke("papers:search", query),
   resolvePaperSuggestion: (id) => ipcRenderer.invoke("papers:resolve-suggestion", id),
   archive: {
