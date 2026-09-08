@@ -1,6 +1,6 @@
 # Paper Ocean
 
-> **v1.1.0 预览开发中**：增加 Ubuntu `.deb` / AppImage 打包与“看过 / 问过”的跨设备论文池。三平台共用主要代码；同步不包含 PDF 或问答正文。安装、连接方式及当前验证边界见 [Ubuntu 与论文池说明](docs/ubuntu-paper-pool.md)。
+> **v1.1.0 预览**：增加 Ubuntu `.deb` / AppImage 打包与“看过 / 问过”的跨设备论文池。三平台共用主要代码；同步不包含 PDF 或问答正文。Ubuntu 22.04 / 24.04 已通过构建、安装与窗口验证。安装、连接方式及验证边界见 [Ubuntu 与论文池说明](docs/ubuntu-paper-pool.md)。
 
 Paper Ocean 是一个面向 Windows 与 macOS 的本地优先论文阅读器：保留阅读位置，用自己的 ChatGPT/Codex 订阅讨论固定的一组论文，并把结论连回原文与研究笔记。
 

@@ -2,6 +2,15 @@
 
 v1.1.0 预览。Windows、Ubuntu、macOS 共用 React 界面、PDF 阅读、Codex 服务、资料库与论文池；系统差异集中在已有的平台分支和打包配置中。没有复制一套 Linux 产品代码。
 
+![Ubuntu 22.04 安装包中的中文论文池界面](ubuntu-paper-pool.png)
+
+## 本轮验证记录
+
+- [Ubuntu 22.04 / 24.04 构建与安装验证](https://github.com/SII-k7/Paper-Ocean/actions/runs/34220528714)：两项通过。每个平台 109 项自动测试通过；deb 实际安装后启动窗口，导入测试 PDF、渲染画布、建立全文索引、显示看过的论文，验证预加载桥接和设置入口。中文字体依赖安装后截图确认无方框字。
+- [Windows 配套包](https://github.com/SII-k7/Paper-Ocean/actions/runs/34220940981)：109 项测试、类型检查与打包通过；本机另用独立桌面资料库验证了论文池筛选、设置错误提示，以及完全没有本地 PDF 时显示远端“问过”条目。
+- 双客户端同步测试通过真实 HTTP 传输模拟条件写入服务，验证并发写入冲突重试、离线后重启补齐与字段白名单。测试使用隔离目录与虚拟论文，不上传用户阅读记录。
+- 目前未接入用户的真实 WebDAV；实际两台设备的地址与凭据需要在应用内配置。CI 未使用个人账户发起真实 AI 问答，真实桌面输入法、GPU、钥匙串和具体 WebDAV 服务仍需环境验收。macOS 本轮未实机测试。
+
 ## Ubuntu 安装
 
 目标为 Ubuntu 22.04／24.04 x64。优先使用 `.deb`；AppImage 为便携候选。当前预览产物在 [Ubuntu 构建记录](https://github.com/SII-k7/Paper-Ocean/actions/workflows/linux-preview.yml) 的成功运行附件中，需登录 GitHub 下载。
