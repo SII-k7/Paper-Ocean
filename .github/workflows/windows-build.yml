@@ -3,7 +3,7 @@ on:
   workflow_call:
   workflow_dispatch:
   push:
-    branches: [ubuntu-paper-pool]
+    branches: [main]
     paths: [electron/**, src/**, test/**, scripts/**, 'package*.json', vite.config.ts, .github/workflows/windows-build.yml]
 permissions:
   contents: read

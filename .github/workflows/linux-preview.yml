@@ -3,7 +3,7 @@ on:
   workflow_call:
   workflow_dispatch:
   push:
-    branches: [ubuntu-paper-pool]
+    branches: [main]
     paths-ignore: [docs/**, README.md, .github/workflows/windows-build.yml, .github/workflows/release.yml]
 permissions:
   contents: read

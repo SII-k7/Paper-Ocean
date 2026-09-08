@@ -1,12 +1,12 @@
 # Paper Ocean
 
-> **v1.1.0 预览**：增加 Ubuntu `.deb` / AppImage 打包与“看过 / 问过”的跨设备论文池。三平台共用主要代码；同步不包含 PDF 或问答正文。Ubuntu 22.04 / 24.04 已通过构建、安装与窗口验证。安装、连接方式及验证边界见 [Ubuntu 与论文池说明](docs/ubuntu-paper-pool.md)。
+> **v1.1.0 · Ubuntu 与跨设备论文池**：增加 Ubuntu `.deb` / AppImage 打包与“看过 / 问过”的跨设备论文池。三平台共用主要代码；同步不包含 PDF 或问答正文。Ubuntu 22.04 / 24.04 已通过构建、安装与窗口验证，Windows 与 Ubuntu 经坚果云 WebDAV 的双端同步已由用户验证成功。安装、连接方式及验证边界见 [Ubuntu 与论文池说明](docs/ubuntu-paper-pool.md)。
 
-Paper Ocean 是一个面向 Windows 与 macOS 的本地优先论文阅读器：保留阅读位置，用自己的 ChatGPT/Codex 订阅讨论固定的一组论文，并把结论连回原文与研究笔记。
+Paper Ocean 是一个面向 Windows、Ubuntu 与 macOS 的本地优先论文阅读器：保留阅读位置，用自己的 ChatGPT/Codex 订阅讨论固定的一组论文，并把结论连回原文与研究笔记。
 
 > **v1.0.0 · 大版本迭代**：从论文阅读器升级为贯通发现、阅读、讨论、证据笔记与本地归档的研究工作台。
 
-以下能力适用于 v1.0.0 源码。本次提交不自动发布安装包；旧版 v0.4.0 安装包不包含这些升级。使用新版请从源码运行或自行打包。变更见 [v1.0.0 迭代说明](docs/v1.0.0.md)，验证进度见 [实施记录](docs/implementation-progress.md)。
+以下核心能力始于 v1.0.0，并保留在当前 v1.1.0 中。Windows 与 Ubuntu 安装包见 [构建下载说明](docs/ubuntu-paper-pool.md)；也可从源码运行或自行打包。旧版 v0.4.0 安装包不包含这些升级。历史变更见 [v1.0.0 迭代说明](docs/v1.0.0.md)，验证进度见 [实施记录](docs/implementation-progress.md)。
 
 ![Paper Ocean v1.0.0 论文工作台](docs/workspace-v1.png)
 
