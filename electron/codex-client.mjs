@@ -46,16 +46,19 @@ export function splitAdditionalContextValue(value, maximumBytes = ADDITIONAL_CON
   return chunks;
 }
 
-function macCodexCandidates(homeDir, env) {
+export function unixCodexCandidates(homeDir, env, platform = process.platform) {
   return [
     env.PAPER_OCEAN_CODEX_PATH,
     path.join(homeDir, ".local", "bin", "codex"),
     path.join(homeDir, ".npm-global", "bin", "codex"),
     path.join(homeDir, ".bun", "bin", "codex"),
     path.join(homeDir, ".volta", "bin", "codex"),
-    path.join(homeDir, "Library", "pnpm", "codex"),
-    "/opt/homebrew/bin/codex",
+    env.NVM_BIN && path.join(env.NVM_BIN, "codex"),
+    env.PNPM_HOME && path.join(env.PNPM_HOME, "codex"),
+    path.join(homeDir, ".local", "share", "pnpm", "codex"),
+    ...(platform === "darwin" ? [path.join(homeDir, "Library", "pnpm", "codex"), "/opt/homebrew/bin/codex"] : []),
     "/usr/local/bin/codex",
+    "/usr/bin/codex",
   ].filter(Boolean);
 }
 
@@ -85,26 +88,19 @@ export function resolveCodexExecutable(
     if (existsSync(npmBinary)) return npmBinary;
   }
 
-  if (platform === "darwin") {
-    const discovered = macCodexCandidates(homeDir, env).find((candidate) => existsSync(candidate));
+  if (platform !== "win32") {
+    const discovered = unixCodexCandidates(homeDir, env, platform).find((candidate) => existsSync(candidate));
     if (discovered) return discovered;
   }
 
   return platform === "win32" ? "codex.cmd" : "codex";
 }
 
-export function codexSpawnEnvironment(executable, env = process.env) {
-  if (process.platform !== "darwin") return { ...env };
+export function codexSpawnEnvironment(executable, env = process.env, platform = process.platform) {
+  if (platform === "win32") return { ...env };
   const extraDirectories = [
     path.isAbsolute(executable) ? path.dirname(executable) : null,
-    path.join(os.homedir(), ".local", "bin"),
-    path.join(os.homedir(), ".npm-global", "bin"),
-    path.join(os.homedir(), ".bun", "bin"),
-    path.join(os.homedir(), ".volta", "bin"),
-    path.join(os.homedir(), "Library", "pnpm"),
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-    "/usr/bin",
+    ...unixCodexCandidates(os.homedir(), env, platform).map(candidate => path.dirname(candidate)),
     "/bin",
   ].filter(Boolean);
   const existing = String(env.PATH || "").split(path.delimiter).filter(Boolean);

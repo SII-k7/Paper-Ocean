@@ -14,6 +14,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  linux:
+    name: Ubuntu packages and smoke tests
+    uses: ./.github/workflows/linux-preview.yml
+
   windows:
     name: Windows x64 portable
     runs-on: windows-2022
@@ -122,6 +126,7 @@ jobs:
     needs:
       - windows
       - macos
+      - linux
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

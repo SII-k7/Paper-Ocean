@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PaperRecord, PaperArchiveStatus, PaperCategory } from "../types";
 import { PAPER_CATEGORIES } from "../../electron/paper-classification.mjs";
+import PaperPool from "./PaperPool";
 
 type Props = {
   papers: PaperRecord[];
@@ -22,6 +23,7 @@ export default function LibraryPanel({ papers, opening, onClose, onOpen, onStatu
   const [message, setMessage] = useState("");
   const [archive, setArchive] = useState<PaperArchiveStatus>();
   const [archiveWorking, setArchiveWorking] = useState(false);
+  const [tab, setTab] = useState("local");
   useEffect(() => {
     let mounted = true;
     const refresh = () => window.paperOcean.archive.status().then(state => { if (mounted) setArchive(state); }).catch(error => { if (mounted) setMessage(String(error)); });
@@ -59,6 +61,8 @@ export default function LibraryPanel({ papers, opening, onClose, onOpen, onStatu
   };
   return <dialog ref={dialogRef} className="library-dialog" aria-labelledby="library-title" onCancel={onClose} onClick={(event) => { if (event.target === dialogRef.current) onClose(); }}>
     <header><div><h2 id="library-title">资料库</h2><p>{papers.length} 篇论文 · 每份原文独立保存阅读记录与证据</p></div><button type="button" aria-label="关闭资料库" onClick={onClose}>×</button></header>
+    <nav className="pool-tabs" aria-label="资料库分区"><button type="button" aria-pressed={tab === "local"} onClick={()=>setTab("local")}>本机资料库</button><button type="button" aria-pressed={tab === "pool"} onClick={()=>setTab("pool")}>论文池 · 看过的论文</button></nav>
+    {tab === "pool" ? <PaperPool papers={papers} onOpen={async id=>{const success = await onOpen(id); if(success) onClose(); return success;}} /> : <>
     <div className="library-filters">
       <input ref={searchRef} aria-label="搜索资料库" placeholder="标题、作者、arXiv ID 或摘要…" value={query} onChange={(event) => { setQuery(event.target.value); setLimit(50); }} />
       <select aria-label="筛选阅读状态" value={status} onChange={(event) => { setStatus(event.target.value); setLimit(50); }}><option value="all">全部状态</option><option value="unread">待读</option><option value="reading">阅读中</option><option value="done">已读</option></select>
@@ -93,5 +97,6 @@ export default function LibraryPanel({ papers, opening, onClose, onOpen, onStatu
       </article>)}
       {filtered.length > limit && <button type="button" onClick={() => setLimit(limit + 50)}>再显示 50 篇（共 {filtered.length} 篇）</button>}
     </div>
+  </>}
   </dialog>;
 }

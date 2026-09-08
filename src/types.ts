@@ -3,6 +3,9 @@ export type PdfPageIndex = {
   text: string;
 };
 
+export type PoolPaper = { id: string; title: string; authors: string[]; arxivId?: string; arxivVersion?: number; sourceUrl?: string; seenAt: number; askedAt: number };
+export type PoolState = { papers: PoolPaper[]; configured: boolean; url: string; username: string; syncing: boolean; lastSync: number; error: string };
+
 export type ReadingPosition = {
   page: number;
   y: number;

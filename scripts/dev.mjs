@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import process from "node:process";
+import electronPath from "electron";
 import { createServer } from "vite";
 
 const server = await createServer({
@@ -8,11 +9,7 @@ const server = await createServer({
 
 await server.listen();
 
-const electronBinary = process.platform === "win32"
-  ? new URL("../node_modules/electron/dist/electron.exe", import.meta.url).pathname.slice(1)
-  : new URL("../node_modules/.bin/electron", import.meta.url).pathname;
-
-const electron = spawn(electronBinary, ["."], {
+const electron = spawn(electronPath, ["."], {
   cwd: new URL("..", import.meta.url),
   env: {
     ...process.env,
