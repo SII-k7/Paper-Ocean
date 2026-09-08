@@ -52,6 +52,7 @@ jobs:
         if: always()
         with:
           name: ${{ matrix.os == 'ubuntu-22.04' && 'paper-ocean-linux-x64' || 'ubuntu-24.04-validation-packages' }}
+          compression-level: 0
           path: |
             release/*.deb
             release/*.AppImage

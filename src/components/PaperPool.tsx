@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { PaperRecord, PoolState } from "../types";
+const messageFor = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason)).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "");
 
 export default function PaperPool({ papers, onOpen }: { papers: PaperRecord[]; onOpen(id: string): Promise<boolean> }) {
   const [state, setState] = useState<PoolState>(), [query, setQuery] = useState(""), [filter, setFilter] = useState("seen");
@@ -14,7 +15,7 @@ export default function PaperPool({ papers, onOpen }: { papers: PaperRecord[]; o
   }, []);
   async function run(action: () => Promise<PoolState>) {
     setBusy(true); setError("");
-    try { setState(await action()); setPassword(""); } catch(reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    try { setState(await action()); setPassword(""); } catch(reason) { setError(messageFor(reason)); }
     finally { setBusy(false); }
   }
   if (!window.paperOcean.pool) return <p className="pool-intro">请在桌面版打开论文池；网页预览仍使用独立的本机资料库。</p>;
@@ -39,7 +40,7 @@ export default function PaperPool({ papers, onOpen }: { papers: PaperRecord[]; o
     <div className="library-results" aria-label="共享论文列表">
       {!rows.length && <p>{state ? "还没有符合条件的论文。打开论文或提问后会自动记入。" : "正在读取论文池…"}</p>}
       {rows.map(paper => { const local = papers.some(item=>item.id===paper.id); const source = paper.sourceUrl || (paper.arxivId ? `https://arxiv.org/abs/${paper.arxivId}${paper.arxivVersion ? `v${paper.arxivVersion}` : ""}` : undefined);
-        return <article key={paper.id}><h3>{paper.title}</h3><p>{paper.authors.join("、")}</p><div className="pool-tags"><span>{paper.askedAt ? "问过" : "看过"}</span><span>{local ? "本机有记录" : "来自另一设备 · 本机未导入"}</span></div>
+        return <article key={paper.id}><h3>{paper.title}</h3><p>{paper.authors.join("、")}</p><div className="pool-tags"><span>{paper.askedAt ? "问过" : "看过"}</span><span>{local ? "本机有记录" : "仅历史记录 · 本机未导入"}</span></div>
           <div className="pool-actions">{local && <button type="button" disabled={busy} onClick={()=>{setBusy(true);void onOpen(paper.id).then(ok=>{if(!ok)setError("本机原件暂不可用，请在资料库重新定位 PDF。");}).catch(reason=>setError(String(reason))).finally(()=>setBusy(false));}}>打开本机论文</button>}{source && <button type="button" onClick={()=>void window.paperOcean.openExternal(source).catch(reason=>setError(String(reason)))}>论文来源 ↗</button>}</div>
         </article>;
       })}
