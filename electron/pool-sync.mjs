@@ -48,16 +48,17 @@ export async function exchangePool(config, local, fetcher = fetch, { allowHttp =
   throw new Error("另一台设备正在更新，稍后会重试；本地记录已保留");
 }
 export function createPoolSync({ directory, loadLibrary, encodeSecret, decodeSecret, fetcher = fetch, allowHttp = false }) {
-  let queue = Promise.resolve(), syncing = false, lastSync = 0, error = "", timer;
+  let queue = Promise.resolve(), syncing = false, lastSync = 0, error = "", timer, inFlight;
   const dataFile = path.join(directory, "paper-pool.json"), configFile = path.join(directory, "paper-pool-config.json");
   const serial = task => { const result = queue.catch(()=>{}).then(task); queue = result; return result; };
   async function config() { const stored = await readJson(configFile, null); return stored ? { ...stored, password: await decodeSecret(stored.secret) } : null; }
   async function local() { return mergePools(validatePool(await readJson(dataFile, EMPTY)), poolFromLibrary(await loadLibrary())); }
   async function status() {
-    return serial(async () => { const stored = await readJson(configFile, null); const pool = await local(); return { papers: pool.papers, configured: Boolean(stored), url: stored?.url || "", username: stored?.username || "", syncing, lastSync, error }; });
+    const stored = await readJson(configFile, null); const pool = await local(); return { papers: pool.papers, configured: Boolean(stored), url: stored?.url || "", username: stored?.username || "", syncing, lastSync, error };
   }
   async function run() {
-    return serial(async () => {
+    if (inFlight) return inFlight;
+    inFlight = serial(async () => {
       syncing = true; error = "";
       try {
         const before = await local(); await atomicJson(dataFile, before);
@@ -65,13 +66,15 @@ export function createPoolSync({ directory, loadLibrary, encodeSecret, decodeSec
         if (settings) { const merged = await exchangePool(settings, before, fetcher, { allowHttp }); await atomicJson(dataFile, merged); lastSync = Date.now(); }
       } catch (reason) { error = reason instanceof Error ? reason.message : String(reason); }
       finally { syncing = false; }
-    }).then(status);
+    }).then(status).finally(()=>{inFlight=undefined;});
+    return inFlight;
   }
   return {
     status, run,
     configure: async input => { await serial(async () => {
       if (input === null) { await fs.rm(configFile, { force: true }); return; }
       const url = String(input.url || "").trim(), username = String(input.username || "").trim();
+      if(url.length > 2000 || username.length > 500 || String(input.password || "").length > 10000) throw new Error("同步设置内容过长");
       poolEndpoint(url, allowHttp);
       if (!username || username.includes(":")) throw new Error("请填写有效的 WebDAV 用户名");
       const old = await readJson(configFile, null);

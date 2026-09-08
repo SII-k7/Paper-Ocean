@@ -20,13 +20,13 @@ export default function PaperPool({ papers, onOpen }: { papers: PaperRecord[]; o
   if (!window.paperOcean.pool) return <p className="pool-intro">请在桌面版打开论文池；网页预览仍使用独立的本机资料库。</p>;
   const rows = (state?.papers || []).filter(paper => (filter !== "asked" || paper.askedAt > 0) && `${paper.title} ${paper.authors.join(" ")} ${paper.arxivId || ""}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())).sort((a,b) => Math.max(b.seenAt,b.askedAt)-Math.max(a.seenAt,a.askedAt));
   return <div className="paper-pool">
-    <p className="pool-intro">两台电脑共享看过、问过的论文清单。只同步标题、作者、来源和历史标记，不传 PDF、问答正文或登录凭据。</p>
+    <p className="pool-intro">两台电脑共享看过、问过的论文清单。只同步标题、作者、来源和历史标记，不传 PDF、问答正文或 Codex 登录凭据。</p>
     <div className="library-filters">
       <input aria-label="搜索论文池" placeholder="搜索看过的论文…" value={query} onChange={event=>setQuery(event.target.value)} />
       <select aria-label="论文池筛选" value={filter} onChange={event=>setFilter(event.target.value)}><option value="seen">看过的论文</option><option value="asked">问过的论文</option></select>
       <button type="button" disabled={busy} onClick={()=>void run(()=>window.paperOcean.pool!.sync())}>{busy ? "同步中…" : "立即同步"}</button>
     </div>
-    <p className="pool-status" role="status">{error || state?.error || (state?.configured ? state.lastSync ? `上次同步：${new Date(state.lastSync).toLocaleString()}` : "已配置，等待同步" : "当前仅本机记录；连接同一 WebDAV 文件夹后可跨设备共享")}</p>
+    <p className="pool-status" role="status">{error || state?.error || (state?.syncing ? "正在同步，本机阅读不受影响…" : state?.configured ? state.lastSync ? `上次同步：${new Date(state.lastSync).toLocaleString()}` : "已配置，等待同步" : "当前仅本机记录；连接同一 WebDAV 文件夹后可跨设备共享")}</p>
     <details className="pool-settings"><summary>同步设置</summary>
       <form onSubmit={event=>{event.preventDefault();void run(()=>window.paperOcean.pool!.configure({url,username,password}));}}>
         <p>两台设备填写同一个已有的 HTTPS WebDAV 文件夹。密码使用系统密钥环加密保存。应用开启时每分钟同步，离线记录会在恢复连接后补齐。</p>

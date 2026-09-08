@@ -4,6 +4,8 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "paper-ocean-linux-smoke-"));
+// Virtual CI displays do not provide a real GPU; keep Chromium sandbox enabled.
+app.disableHardwareAcceleration();
 app.setPath("userData",root);app.setPath("sessionData",path.join(root,"session"));
 process.env.PAPER_OCEAN_ARCHIVE_DIR=path.join(root,"archive");
 const timeout = setTimeout(()=>{console.error("Linux window smoke test timed out");app.exit(1);},45000);
