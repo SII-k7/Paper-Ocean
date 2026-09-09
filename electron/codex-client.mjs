@@ -13,13 +13,17 @@ const MODEL_CACHE_MS = 60_000;
 const ADDITIONAL_CONTEXT_CHUNK_BYTES = 800;
 export const PAPER_OCEAN_MODEL_IDS = [READING_MODEL];
 const MODEL_ID_SET = new Set(PAPER_OCEAN_MODEL_IDS);
+export const PAPER_OCEAN_PROVIDER = "paper_ocean_http";
 
 export function codexAppServerArgs() {
+  // Recent Codex versions ignore the old responses_websockets feature flags.
+  // Use a process-local provider capability instead, retaining OpenAI login and
+  // its default endpoint. Never overwrite the user's global provider settings.
   return [
-    "--disable",
-    "responses_websockets",
-    "--disable",
-    "responses_websockets_v2",
+    "-c",
+    `model_provider="${PAPER_OCEAN_PROVIDER}"`,
+    "-c",
+    `model_providers.${PAPER_OCEAN_PROVIDER}={name="Paper Ocean HTTP",wire_api="responses",requires_openai_auth=true,supports_websockets=false}`,
     "app-server",
   ];
 }
@@ -356,6 +360,7 @@ export class CodexClient extends EventEmitter {
     const selection = await this.#validatedSelection({ model });
     const result = await this.request("thread/start", {
       model: selection.model,
+      modelProvider: PAPER_OCEAN_PROVIDER,
       serviceTier: serviceTier === null ? null : selection.serviceTier ?? null,
       cwd: contextDir,
       runtimeWorkspaceRoots: [contextDir],
@@ -377,6 +382,7 @@ export class CodexClient extends EventEmitter {
     if (this.loadedThreads.get(threadId) === path.resolve(contextDir)) return threadId;
     const result = await this.request("thread/resume", {
       threadId,
+      modelProvider: PAPER_OCEAN_PROVIDER,
       cwd: contextDir,
       runtimeWorkspaceRoots: [contextDir],
       approvalPolicy: "never",

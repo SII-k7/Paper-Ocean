@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   codexAppServerArgs,
+  PAPER_OCEAN_PROVIDER,
   normalizeModelCatalog,
   resolveCodexExecutable,
   splitAdditionalContextValue,
@@ -24,12 +25,32 @@ test("Linux desktop discovers user-local Codex and adds its directory to the chi
 
 test("Paper Ocean starts Codex app-server on the stable HTTP streaming transport", () => {
   assert.deepEqual(codexAppServerArgs(), [
-    "--disable",
-    "responses_websockets",
-    "--disable",
-    "responses_websockets_v2",
+    "-c",
+    'model_provider="paper_ocean_http"',
+    "-c",
+    'model_providers.paper_ocean_http={name="Paper Ocean HTTP",wire_api="responses",requires_openai_auth=true,supports_websockets=false}',
     "app-server",
   ]);
+});
+
+test("new and persisted threads explicitly select HTTP, including threads saved with another provider", async () => {
+  const { CodexClient } = await import("../electron/codex-client.mjs");
+  const client = new CodexClient(), calls = [];
+  client.start = async () => {};
+  client.models = async () => [{id:"gpt-5.6-luna",supportedEfforts:["max"]}];
+  client.request = async (method, params) => {
+    calls.push({method, params});
+    return {thread:{id:params.threadId || "new-thread"}};
+  };
+  await client.startThread({contextDir:".",title:"Fixture"});
+  await client.resumeThread({threadId:"existing-openai-thread",contextDir:"."});
+  assert.deepEqual(calls.map(call => call.method), ["thread/start", "thread/resume"]);
+  for (const {params} of calls) {
+    assert.equal(params.modelProvider, PAPER_OCEAN_PROVIDER);
+    assert.equal(params.sandbox, "read-only");
+    assert.equal(params.approvalPolicy, "never");
+  }
+  assert.equal(calls[1].params.threadId,"existing-openai-thread");
 });
 
 test("selected paper excerpts are losslessly split below the Codex context limit", () => {
