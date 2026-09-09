@@ -137,6 +137,7 @@ export function normalizeModelCatalog(result) {
       description: String(row?.description ?? ""),
       defaultEffort,
       supportedEfforts,
+      serviceTiers: (Array.isArray(row.serviceTiers) ? row.serviceTiers : []).filter(tier => typeof tier?.id === "string" && typeof tier?.name === "string").map(({ id, name }) => ({ id, name })),
       isDefault: Boolean(row?.isDefault),
     }];
   }).sort((left, right) => (
@@ -154,6 +155,7 @@ export class CodexClient extends EventEmitter {
     this.executable = resolveCodexExecutable();
     this.modelCache = null;
     this.modelCacheAt = 0;
+    this.loadedThreads = new Map();
   }
 
   async setExecutable(executable) {
@@ -237,6 +239,9 @@ export class CodexClient extends EventEmitter {
     }
 
     if (message.method) {
+      if (message.method === "thread/closed" || (message.method === "thread/status/changed" && ["notLoaded", "systemError"].includes(message.params?.status?.type))) {
+        this.loadedThreads.delete(message.params?.threadId);
+      }
       this.emit("event", { method: message.method, params: message.params ?? {} });
     }
   }
@@ -245,6 +250,7 @@ export class CodexClient extends EventEmitter {
     const pending = [...this.pending.values()];
     this.pending.clear();
     this.proc = null;
+    this.loadedThreads.clear();
     for (const item of pending) {
       clearTimeout(item.timer);
       item.reject(error);
@@ -345,11 +351,12 @@ export class CodexClient extends EventEmitter {
     return selection;
   }
 
-  async startThread({ contextDir, title, model }) {
+  async startThread({ contextDir, title, model, serviceTier }) {
     await this.start();
     const selection = await this.#validatedSelection({ model });
     const result = await this.request("thread/start", {
       model: selection.model,
+      serviceTier: serviceTier === null ? null : selection.serviceTier ?? null,
       cwd: contextDir,
       runtimeWorkspaceRoots: [contextDir],
       approvalPolicy: "never",
@@ -361,11 +368,13 @@ export class CodexClient extends EventEmitter {
     });
     const threadId = result?.thread?.id;
     if (!threadId) throw new Error(`无法为《${title}》创建 Codex 对话`);
+    this.loadedThreads.set(threadId, path.resolve(contextDir));
     return threadId;
   }
 
   async resumeThread({ threadId, contextDir }) {
     await this.start();
+    if (this.loadedThreads.get(threadId) === path.resolve(contextDir)) return threadId;
     const result = await this.request("thread/resume", {
       threadId,
       cwd: contextDir,
@@ -375,7 +384,9 @@ export class CodexClient extends EventEmitter {
       personality: "friendly",
       baseInstructions: PAPER_READING_BASE_INSTRUCTIONS,
     });
-    return result?.thread?.id ?? threadId;
+    const resumedId = result?.thread?.id ?? threadId;
+    this.loadedThreads.set(resumedId, path.resolve(contextDir));
+    return resumedId;
   }
 
   async sendTurn({
@@ -388,9 +399,12 @@ export class CodexClient extends EventEmitter {
     pageImages = [],
     model,
     effort,
+    serviceTier,
   }) {
     await this.start();
     const selection = await this.#validatedSelection({ model, effort });
+    // Use the advertised tier ID (currently "priority"), not the UI label "Fast".
+    const selectedTier = serviceTier === null ? null : selection.serviceTier ?? null;
     const input = [{ type: "text", text: prompt, text_elements: [] }];
     if (pageImages.length) {
       for (const image of pageImages.slice(0,3)) {
@@ -400,9 +414,13 @@ export class CodexClient extends EventEmitter {
     } else if (pageImagePath) input.push({ type: "localImage", path: pageImagePath });
 
     const additionalContext = {};
-    for (const entry of entries) {
+    const values = [];
+    for (let offset = 0; offset < entries.length; offset += 16) {
+      values.push(...await Promise.all(entries.slice(offset, offset + 16).map(entry => fs.readFile(entry.path, "utf8"))));
+    }
+    for (const [index, entry] of entries.entries()) {
       additionalContext[entry.key] = {
-        value: await fs.readFile(entry.path, "utf8"),
+        value: values[index],
         kind: entry.kind,
       };
     }
@@ -426,13 +444,14 @@ export class CodexClient extends EventEmitter {
       },
       model: selection.model,
       effort: selection.effort,
+      serviceTier: selectedTier,
       summary: "concise",
       personality: "friendly",
     });
 
     const turnId = result?.turn?.id;
     if (!turnId) throw new Error("Codex 没有返回 turnId");
-    return { turnId };
+    return { turnId, serviceTier: selectedTier };
   }
 
   async interrupt({ threadId, turnId }) {
@@ -441,6 +460,7 @@ export class CodexClient extends EventEmitter {
   }
 
   stop() {
+    this.loadedThreads.clear();
     const proc = this.proc;
     this.proc = null;
     if (!proc || proc.killed || proc.exitCode !== null) return Promise.resolve();

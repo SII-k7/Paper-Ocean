@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FileText, Library, Moon, Plus, Settings, Sun, X } from "lucide-react";
 import PaperSearch from "./components/PaperSearch";
 import { fixedReadingSelection } from "../electron/reading-model.mjs";
+import { createAnswerStream } from "./answer-stream.mjs";
 import ChatPanel from "./components/ChatPanel";
 import NotesPanel from "./components/NotesPanel";
 import LibraryPanel from "./components/LibraryPanel";
@@ -100,7 +101,8 @@ export default function App() {
   const activeTurnRef = useRef<ActiveTurn | null>(null);
   const cancelRequestedRef = useRef(false);
   const deltaBufferRef = useRef<{ scopeKey: string; messageId: string; text: string } | null>(null);
-  const deltaFrameRef = useRef<number | undefined>(undefined);
+  const deltaTimerRef = useRef<number | undefined>(undefined);
+  const answerStreamRef = useRef(createAnswerStream());
   const themeTransitionTimerRef = useRef<number | undefined>(undefined);
   const bootedRef = useRef(false);
   const [theme, setTheme] = useState<Theme>(initialTheme);
@@ -372,29 +374,30 @@ export default function App() {
     };
 
     const flushDelta = () => {
-      if (deltaFrameRef.current !== undefined) {
-        window.cancelAnimationFrame(deltaFrameRef.current);
-        deltaFrameRef.current = undefined;
+      if (deltaTimerRef.current !== undefined) {
+        window.clearTimeout(deltaTimerRef.current);
+        deltaTimerRef.current = undefined;
       }
       const buffered = deltaBufferRef.current;
       deltaBufferRef.current = null;
       if (!buffered?.text) return;
       updateAssistant(buffered.scopeKey, buffered.messageId, (message) => ({
         ...message,
-        text: message.text + buffered.text,
+        text: buffered.text,
+        firstTextAt: message.firstTextAt ?? Date.now(),
+        responsePhase: "正在输出",
       }));
     };
 
-    const queueDelta = (scopeKey: string, messageId: string, delta: string) => {
+    const queueText = (scopeKey: string, messageId: string, text: string) => {
       const buffered = deltaBufferRef.current;
       if (buffered && (buffered.scopeKey !== scopeKey || buffered.messageId !== messageId)) flushDelta();
-      if (deltaBufferRef.current) deltaBufferRef.current.text += delta;
-      else deltaBufferRef.current = { scopeKey, messageId, text: delta };
-      if (deltaFrameRef.current === undefined) {
-        deltaFrameRef.current = window.requestAnimationFrame(() => {
-          deltaFrameRef.current = undefined;
+      deltaBufferRef.current = { scopeKey, messageId, text };
+      if (deltaTimerRef.current === undefined) {
+        deltaTimerRef.current = window.setTimeout(() => {
+          deltaTimerRef.current = undefined;
           flushDelta();
-        });
+        }, 50);
       }
     };
 
@@ -437,33 +440,17 @@ export default function App() {
       if (eventThreadId && eventThreadId !== active.threadId) return;
       if (active.turnId && eventTurnId && eventTurnId !== active.turnId) return;
 
-      if (event.method === "item/agentMessage/delta") {
-        const delta = typeof params?.delta === "string"
-          ? params.delta
-          : typeof params?.delta?.text === "string"
-            ? params.delta.text
-            : "";
-        if (delta) {
-          queueDelta(active.scopeKey, active.assistantMessageId, delta);
-        }
-      }
-
-      if (event.method === "item/completed" && params?.item?.type === "agentMessage") {
-        const finalText = params.item.text;
-        if (typeof finalText === "string" && finalText) {
-          deltaBufferRef.current = null;
-          if (deltaFrameRef.current !== undefined) {
-            window.cancelAnimationFrame(deltaFrameRef.current);
-            deltaFrameRef.current = undefined;
-          }
-          updateAssistant(active.scopeKey, active.assistantMessageId, (message) => ({ ...message, text: finalText }));
-        } else {
-          flushDelta();
-        }
+      const streamedText = answerStreamRef.current.consume(event.method, params ?? {});
+      if (streamedText) queueText(active.scopeKey, active.assistantMessageId, streamedText);
+      if (event.method === "item/started" && params?.item?.type === "reasoning") {
+        updateAssistant(active.scopeKey, active.assistantMessageId, message => ({ ...message, responsePhase: "思考中" }));
       }
 
       if (event.method === "error") {
-        if (params?.willRetry === true) return;
+        if (params?.willRetry === true) {
+          updateAssistant(active.scopeKey, active.assistantMessageId, message => ({ ...message, responsePhase: "连接波动，正在重试" }));
+          return;
+        }
         flushDelta();
         const message = params?.error?.message ?? "Codex 回答失败";
         updateAssistant(active.scopeKey, active.assistantMessageId, (item) => ({
@@ -487,6 +474,7 @@ export default function App() {
           pending: false,
           error: status === "failed",
           interrupted: status === "interrupted",
+          finishedAt: Date.now(),
           text: message.text || failure || (status === "interrupted" ? "回答已停止。" : "没有生成可显示的回答。"),
         }));
         if (failure) setError(failure);
@@ -519,8 +507,8 @@ export default function App() {
       unsubscribe();
       window.removeEventListener("paper-ocean-before-close", prepareForClose);
       window.removeEventListener("paper-ocean-before-save", flushDelta);
-      if (deltaFrameRef.current !== undefined) window.cancelAnimationFrame(deltaFrameRef.current);
-      deltaFrameRef.current = undefined;
+      if (deltaTimerRef.current !== undefined) window.clearTimeout(deltaTimerRef.current);
+      deltaTimerRef.current = undefined;
       deltaBufferRef.current = null;
     };
   }, [loadModels]);
@@ -665,6 +653,8 @@ export default function App() {
       text: "",
       createdAt: Date.now(),
       pending: true,
+      responsePhase: "准备论文资料",
+      serviceTier: library.readingPreferencesByScope?.[effectiveScopeKey]?.speed === "standard" ? null : modelSelection.serviceTier ?? null,
     };
     setLibrary((previous) => ({
       ...previous,
@@ -683,6 +673,9 @@ export default function App() {
     const throwIfCancelled = () => {
       if (cancelRequestedRef.current) throw new CancelledTurnError();
     };
+    const setPhase = (responsePhase: string, extra: Partial<ChatMessage> = {}) => setLibrary(previous => ({
+      ...previous, messagesByScope: { ...previous.messagesByScope, [effectiveScopeKey]: (previous.messagesByScope[effectiveScopeKey] ?? []).map(message => message.id === assistantMessage.id ? { ...message, responsePhase, ...extra } : message) },
+    }));
 
     try {
       const preparedRecords: PaperRecord[] = [];
@@ -717,6 +710,7 @@ export default function App() {
       }));
 
       let threadId: string | undefined = library.threadsByScope[effectiveScopeKey];
+      setPhase("连接会话");
       if (threadId) {
         try {
           threadId = await window.paperOcean.codex.resumeThread({
@@ -737,6 +731,7 @@ export default function App() {
           contextDir: conversation.contextDir,
           title,
           model: modelSelection.model,
+          serviceTier: assistantMessage.serviceTier,
         });
         throwIfCancelled();
         const nextThreadId = threadId;
@@ -747,6 +742,7 @@ export default function App() {
       }
 
       const pageImages: Array<{ path: string; paperId: string; page: number }> = [];
+      setPhase("准备页图证据");
       const evidencePaper = preparedRecords.find((paper) => paper.id === activePaperId) ?? (preparedRecords.length === 1 ? preparedRecords[0] : undefined);
       if (evidencePaper) {
         const requestedPages = [...question.matchAll(/(?:第\s*)?([1-9]\d*)\s*页|\bpage\s+([1-9]\d*)/giu)].map((match) => Number(match[1] ?? match[2]));
@@ -794,7 +790,9 @@ export default function App() {
         scopeKey: effectiveScopeKey,
         assistantMessageId: assistantMessage.id,
       };
+      answerStreamRef.current = createAnswerStream();
       throwIfCancelled();
+      setPhase("等待模型响应", { sentAt: Date.now() });
       const result = await window.paperOcean.codex.sendTurn({
         threadId,
         contextDir: conversation.contextDir,
@@ -804,9 +802,11 @@ export default function App() {
         pageImages,
         model: modelSelection.model,
         effort: modelSelection.effort,
+        serviceTier: assistantMessage.serviceTier,
       });
       if (activeTurnRef.current) {
         activeTurnRef.current.turnId = result.turnId;
+        setLibrary(previous => ({ ...previous, messagesByScope: { ...previous.messagesByScope, [effectiveScopeKey]: (previous.messagesByScope[effectiveScopeKey] ?? []).map(message => message.id === assistantMessage.id ? { ...message, serviceTier: result.serviceTier ?? null } : message) } }));
         if (cancelRequestedRef.current) {
           await window.paperOcean.codex.interrupt({ threadId, turnId: result.turnId });
         }

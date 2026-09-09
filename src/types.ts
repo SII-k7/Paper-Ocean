@@ -32,6 +32,7 @@ export type ConversationRecord = {
 
 export type ReadingPreferences = {
   depth: "brief" | "balanced" | "deep";
+  speed?: "fast" | "standard";
   templates?: string[];
 };
 
@@ -99,6 +100,11 @@ export type ChatMessage = {
   pending?: boolean;
   interrupted?: boolean;
   error?: boolean;
+  responsePhase?: string;
+  sentAt?: number;
+  firstTextAt?: number;
+  finishedAt?: number;
+  serviceTier?: string | null;
 };
 
 export type Recommendation = {
@@ -164,12 +170,14 @@ export type CodexModel = {
   description: string;
   defaultEffort: CodexEffort;
   supportedEfforts: CodexEffort[];
+  serviceTiers?: Array<{ id: string; name: string }>;
   isDefault: boolean;
 };
 
 export type CodexSelection = {
   model: CodexModel["id"];
   effort: CodexEffort;
+  serviceTier?: string;
 };
 
 export type RateLimitWindow = {

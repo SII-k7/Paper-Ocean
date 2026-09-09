@@ -68,7 +68,7 @@ declare global {
         models(): Promise<CodexModel[]>;
         chooseExecutable(): Promise<CodexAccount | null>;
         rateLimits(): Promise<RateLimitInfo | null>;
-        startThread(input: { contextDir: string; title: string; model?: CodexModel["id"] }): Promise<string>;
+        startThread(input: { contextDir: string; title: string; model?: CodexModel["id"]; serviceTier?: string | null }): Promise<string>;
         resumeThread(input: { threadId: string; contextDir: string }): Promise<string>;
         sendTurn(input: {
           threadId: string;
@@ -80,7 +80,8 @@ declare global {
           pageImages?: Array<{ path: string; paperId: string; page: number }>;
           model?: CodexModel["id"];
           effort?: CodexModel["supportedEfforts"][number];
-        }): Promise<{ turnId: string }>;
+          serviceTier?: string | null;
+        }): Promise<{ turnId: string; serviceTier?: string | null }>;
         interrupt(input: { threadId: string; turnId: string }): Promise<void>;
         onEvent(listener: (event: CodexEvent) => void): () => void;
       };

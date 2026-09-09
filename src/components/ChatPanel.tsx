@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowDown, CheckCircle2, Quote, Send, Sparkles, Square } from "lucide-react";
 import MarkdownMessage from "./MarkdownMessage";
+import ResponseStatus from "./ResponseStatus";
 import useChatPosition from "../hooks/useChatPosition";
 import type {
   ChatMessage,
@@ -99,6 +100,9 @@ export default function ChatPanel({
   const previousMessagesRef = useRef(messages);
   const [search, setSearch] = useState("");
   const [foundIndex, setFoundIndex] = useState(0);
+  const evidenceCallbackRef = useRef(onOpenEvidence);
+  evidenceCallbackRef.current = onOpenEvidence;
+  const openEvidence = useCallback((paperId: string, page: number) => evidenceCallbackRef.current(paperId, page), []);
   const { scrollRef, itemsRef, positionRef, remember, goToMessage, scrollToLatest: followLatest } = useChatPosition(messages, position, onPositionChange);
   const isAllScope = scopePapers.length > 1 || conversation?.readOnly;
   const scopePaperId = scopePapers.length === 1 ? scopePapers[0].id : undefined;
@@ -106,6 +110,7 @@ export default function ChatPanel({
   const scopeReady = !readOnly && scopePapers.length > 0 && scopePapers.every((paper) => paper.paperDir);
   const prompts = preferences?.templates ?? (isAllScope ? ALL_PROMPTS : SINGLE_PROMPTS);
   const depth = preferences?.depth ?? "deep";
+  const fast = preferences?.speed !== "standard" && Boolean(modelSelection?.serviceTier);
 
   const scrollToLatest = () => {
     followLatest();
@@ -286,8 +291,9 @@ export default function ChatPanel({
             {message.contextCoverage && <small className="context-coverage" title="这里只统计已提取的文字。扫描页和图表的视觉内容以本轮附带页图为准，不包含自动 OCR。">{message.contextCoverage.complete ? "已提取文字" : "相关文字／节选"} · {message.contextCoverage.providedPages}/{message.contextCoverage.totalPages} 页</small>}
             {!!message.pageImages?.length && <small className="context-coverage">页图证据：{message.pageImages.map((item) => <button type="button" className="evidence-link" key={`${item.paperId}:${item.page}`} onClick={() => onOpenEvidence(item.paperId, item.page)}>{scopePapers.length > 1 ? `${scopePapers.find((paper) => paper.id === item.paperId)?.title.slice(0, 14) ?? "论文"} · ` : ""}第 {item.page} 页</button>)}</small>}
             {message.role === "assistant" && message.text
-              ? <MarkdownMessage text={message.text} onOpenEvidence={onOpenEvidence} />
-              : <div className="message__content">{message.text || (message.pending ? "正在核对原文…" : "")}</div>}
+              ? <MarkdownMessage text={message.text} onOpenEvidence={openEvidence} />
+              : <div className="message__content">{message.text || (message.pending ? `${message.responsePhase ?? "准备回答"}…` : "")}</div>}
+            {message.role === "assistant" && <ResponseStatus message={message} />}
             {message.pending && <span className="typing-indicator" aria-label="Codex 正在回答"><i /><i /><i /></span>}
             {message.interrupted && <small className="context-coverage" role="status">回答已停止，以上为已生成的部分内容。</small>}
             {message.error && message.text && <small className="context-coverage" role="status">回答未完成；已保留现有内容，可重新发送问题。</small>}
@@ -315,15 +321,19 @@ export default function ChatPanel({
           <label>回答深度 <select aria-label="回答深度" value={depth} onChange={(event) => onPreferencesChange({ ...preferences, depth: event.target.value as ReadingPreferences["depth"] })}>
             <option value="brief">简短</option><option value="balanced">标准</option><option value="deep">深入</option>
           </select></label>
+          <label title="Fast 保留 max 思考强度。官方标称约 1.5 倍速度，GPT-5.6 额度消耗约为标准模式的 2.5 倍。">响应速度 <select aria-label="响应速度" disabled={busy} value={fast ? "fast" : "standard"} onChange={event => onPreferencesChange({ ...preferences, depth, speed: event.target.value as ReadingPreferences["speed"] })}>
+            <option value="fast" disabled={!modelSelection?.serviceTier}>Fast{!modelSelection?.serviceTier ? "（当前不可用）" : " · 更多额度"}</option>
+            <option value="standard">标准</option>
+          </select></label>
           <details className="prompt-settings">
             <summary>提问模板</summary>
             <div className="prompt-settings__body">
               {prompts.map((prompt, index) => <div key={index}>
-                <textarea aria-label={`提问模板 ${index + 1}`} rows={2} maxLength={8000} value={prompt} onChange={(event) => onPreferencesChange({ depth, templates: prompts.map((text, offset) => offset === index ? event.target.value : text) })} />
+                <textarea aria-label={`提问模板 ${index + 1}`} rows={2} maxLength={8000} value={prompt} onChange={(event) => onPreferencesChange({ ...preferences, depth, templates: prompts.map((text, offset) => offset === index ? event.target.value : text) })} />
                 <button type="button" disabled={!prompt.trim()} onClick={() => setInput(input.trim() ? `${input}\n\n${prompt}` : prompt)}>填入问题</button>
               </div>)}
-              <button type="button" disabled={prompts.length >= 8} onClick={() => onPreferencesChange({ depth, templates: [...prompts, ""] })}>新增模板</button>
-              <button type="button" onClick={() => onPreferencesChange({ depth })}>恢复默认模板</button>
+              <button type="button" disabled={prompts.length >= 8} onClick={() => onPreferencesChange({ ...preferences, depth, templates: [...prompts, ""] })}>新增模板</button>
+              <button type="button" onClick={() => onPreferencesChange({ ...preferences, depth, templates: undefined })}>恢复默认模板</button>
             </div>
           </details>
         </div>
@@ -344,7 +354,7 @@ export default function ChatPanel({
           aria-label="向 Codex 提问"
         />
         <div className="composer-toolbar">
-          <span className="reading-model-label" title={modelSelection ? "阅读模型固定为 GPT-5.6 Luna，思考强度 max" : "当前模型暂不可用，请检查 Codex 连接"}>GPT-5.6 Luna · max{!modelSelection && " · 暂不可用"}</span>
+          <span className="reading-model-label" title={modelSelection ? "阅读模型固定为 GPT-5.6 Luna，思考强度 max" : "当前模型暂不可用，请检查 Codex 连接"}>GPT-5.6 Luna · max{fast && " · Fast"}{!modelSelection && " · 暂不可用"}</span>
           <button
             type="button"
             className={`send-button${busy ? " send-button--stop" : ""}`}

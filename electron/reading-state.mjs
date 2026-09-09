@@ -16,6 +16,7 @@ export function normalizeReadingState(value) {
     ...normalizeNotes(value),
     readingPreferencesByScope: Object.fromEntries(entries(value.readingPreferencesByScope).filter(([, item]) => item && typeof item === "object").map(([scope, item]) => [scope, {
       depth: ["brief", "balanced", "deep"].includes(item.depth) ? item.depth : "deep",
+      speed: item.speed === "standard" ? "standard" : "fast",
       templates: Array.isArray(item.templates) ? item.templates.filter((text) => typeof text === "string").slice(0, 8).map((text) => text.slice(0, 8_000)) : undefined,
     }])),
     lastConversationByPaper: Object.fromEntries(entries(value.lastConversationByPaper).filter(([id, scope]) => /^[a-f0-9]{24}$/.test(id) && typeof scope === "string" && /^(?:paper:[a-f0-9]{24}|conversation:[a-f0-9-]{36})$/.test(scope))),

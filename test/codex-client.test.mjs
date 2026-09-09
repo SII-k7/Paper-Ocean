@@ -80,6 +80,61 @@ test("manual Codex executable path wins on macOS", async () => {
   }
 });
 
+test("Fast uses catalog tier ID, standard explicitly resets it, unavailable Fast stays standard", async () => {
+  const { CodexClient } = await import("../electron/codex-client.mjs");
+  const client = new CodexClient(), calls = [];
+  client.start = async () => {};
+  client.models = async () => normalizeModelCatalog({ data: [{ id: "gpt-5.6-luna", supportedReasoningEfforts: ["max"], serviceTiers: [{ id: "priority", name: "Fast" }] }] });
+  client.request = async (method, params) => { calls.push(params); return { thread: { id: "t" }, turn: { id: "turn" } }; };
+  await client.startThread({ contextDir: ".", title: "Fast" });
+  await client.sendTurn({ threadId: "t", contextDir: ".", prompt: "Read" });
+  await client.sendTurn({ threadId: "t", contextDir: ".", prompt: "Read", serviceTier: null });
+  assert.deepEqual(calls.map(call => call.serviceTier), ["priority", "priority", null]);
+  assert.equal(calls[1].effort, "max");
+  client.models = async () => [{ id: "gpt-5.6-luna", supportedEfforts: ["max"] }];
+  const result = await client.sendTurn({ threadId: "t", contextDir: ".", prompt: "Read" });
+  assert.equal(result.serviceTier, null);
+});
+
+test("warm threads skip resume; changed context, failed resume and stopped server cannot reuse cache", async () => {
+  const { CodexClient } = await import("../electron/codex-client.mjs");
+  const client = new CodexClient(), calls = [];
+  client.start = async () => {};
+  client.models = async () => [{ id: "gpt-5.6-luna", supportedEfforts: ["max"] }];
+  client.request = async (method) => { calls.push(method); return { thread: { id: "t" } }; };
+  await client.startThread({ contextDir: ".", title: "Fixture" });
+  await client.resumeThread({ threadId: "t", contextDir: "." });
+  assert.deepEqual(calls, ["thread/start"]);
+  await client.resumeThread({ threadId: "t", contextDir: "changed" });
+  assert.deepEqual(calls, ["thread/start", "thread/resume"]);
+  await client.stop();
+  await client.resumeThread({ threadId: "t", contextDir: "changed" });
+  assert.equal(calls.length, 3);
+  client.request = async () => { throw new Error("unavailable"); };
+  await assert.rejects(client.resumeThread({ threadId: "other", contextDir: "." }), /unavailable/);
+  assert.equal(client.loadedThreads.has("other"), false);
+});
+
+test("parallel context reads preserve every byte and trust kind; unreadable context never starts a turn", async () => {
+  const { CodexClient } = await import("../electron/codex-client.mjs");
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paper-context-read-"));
+  try {
+    const entries = await Promise.all(Array.from({ length: 35 }, async (_, index) => {
+      const file = path.join(root, `${index}.md`);
+      await fs.writeFile(file, `第 ${index} 页：海洋 ${"x".repeat(index)}`);
+      return { key: `paper-${index}`, path: file, kind: index === 0 ? "application" : "untrusted" };
+    }));
+    const client = new CodexClient(); let sent, calls = 0;
+    client.start = async () => {};
+    client.models = async () => [{ id: "gpt-5.6-luna", supportedEfforts: ["max"] }];
+    client.request = async (_method, params) => { sent = params; calls++; return { turn: { id: "turn" } }; };
+    await client.sendTurn({ threadId: "t", contextDir: root, entries, prompt: "Read" });
+    for (const [index, entry] of entries.entries()) assert.deepEqual(sent.additionalContext[entry.key], { value: `第 ${index} 页：海洋 ${"x".repeat(index)}`, kind: entry.kind });
+    await assert.rejects(client.sendTurn({ threadId: "t", contextDir: root, entries: [...entries, { key: "missing", path: path.join(root, "missing") }], prompt: "Read" }), /ENOENT/);
+    assert.equal(calls, 1);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
 test("account status does not proactively refresh a token", async () => {
   const client = new (await import("../electron/codex-client.mjs")).CodexClient();
   let request;
