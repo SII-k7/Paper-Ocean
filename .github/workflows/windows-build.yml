@@ -38,6 +38,8 @@ jobs:
         run: |
           npm install --no-save --package-lock=false playwright@1.61.1
           node scripts/smoke-windows-installed.mjs
+      - name: Test independent auxiliary conversation
+        run: node scripts/smoke-auxiliary-chat.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: paper-ocean-windows-x64
@@ -52,4 +54,6 @@ jobs:
         if: always()
         with:
           name: windows-installed-screenshot
-          path: output/windows-smoke/*
+          path: |
+            output/windows-smoke/*
+            output/playwright/auxiliary-chat/*.png

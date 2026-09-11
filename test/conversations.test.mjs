@@ -7,6 +7,20 @@ const b = "b".repeat(24);
 const c = "c".repeat(24);
 const id = "conversation:12345678-1234-1234-1234-123456789abc";
 
+test("auxiliary conversations retain a separate identity bound to exactly one paper", () => {
+  const scope = `auxiliary:${a}`;
+  const library = { papers: [{id:a,title:"A"},{id:b,title:"B"}], conversations: {
+    [scope]: {id:scope,title:"辅助对话",paperIds:[a],createdAt:1,updatedAt:2},
+  }, threadsByScope: {[`paper:${a}`]:"main-thread",[scope]:"auxiliary-thread"} };
+  const restored = normalizeConversations(JSON.parse(JSON.stringify(library)));
+  assert.deepEqual(restored[scope].paperIds,[a]);
+  assert.deepEqual(restored[`paper:${a}`].paperIds,[a]);
+  assert.notEqual(library.threadsByScope[scope],library.threadsByScope[`paper:${a}`]);
+  assert.doesNotThrow(() => validateConversationPapers(library,scope,[a]));
+  assert.throws(() => validateConversationPapers(library,scope,[b]),/不匹配/);
+  assert.throws(() => validateConversationPapers(library,scope,[a,b]),/不匹配/);
+});
+
 test("conversation migration preserves single-paper identity and does not invent the sources of legacy mixed history", () => {
   const history = [{ id: "old-message", text: "A historic comparison" }];
   const library = { papers: [{ id: a, title: "Paper A" }], openPaperIds: [a], messagesByScope: { all: history }, threadsByScope: { all: "old-thread" } };

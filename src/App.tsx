@@ -4,6 +4,7 @@ import PaperSearch from "./components/PaperSearch";
 import { fixedReadingSelection } from "../electron/reading-model.mjs";
 import { createAnswerStream } from "./answer-stream.mjs";
 import ChatPanel from "./components/ChatPanel";
+import AuxiliaryChat from "./components/AuxiliaryChat";
 import NotesPanel from "./components/NotesPanel";
 import LibraryPanel from "./components/LibraryPanel";
 import PaperTabs from "./components/PaperTabs";
@@ -134,6 +135,20 @@ export default function App() {
   const [destination, setDestination] = useState<{ paperId: string; position: ReadingPosition; requestId: number }>();
   const [evidenceHistory, setEvidenceHistory] = useState<Array<{ paperId: string; position: ReadingPosition }>>([]);
 
+  const auxiliaryActiveTurnRef = useRef<ActiveTurn | null>(null);
+  const auxiliaryCancelRef = useRef(false);
+  const auxiliaryBufferRef = useRef<{ scopeKey: string; messageId: string; text: string } | null>(null);
+  const auxiliaryTimerRef = useRef<number | undefined>(undefined);
+  const auxiliaryStreamRef = useRef(createAnswerStream());
+  const [auxiliaryBusy, setAuxiliaryBusy] = useState(false);
+  const [auxiliaryBusyScope, setAuxiliaryBusyScope] = useState("");
+  const auxiliaryBusyRef = useRef(false);
+  const [auxiliaryError, setAuxiliaryError] = useState<string | null>(null);
+  const mainLane = { activeTurnRef, cancelRequestedRef, deltaBufferRef, deltaTimerRef, answerStreamRef, busyRef, setBusy, setError };
+  const auxiliaryLane = { activeTurnRef: auxiliaryActiveTurnRef, cancelRequestedRef: auxiliaryCancelRef,
+    deltaBufferRef: auxiliaryBufferRef, deltaTimerRef: auxiliaryTimerRef, answerStreamRef: auxiliaryStreamRef,
+    busyRef: auxiliaryBusyRef, setBusy: setAuxiliaryBusy, setError: setAuxiliaryError };
+
   const activePaper = activePaperId ? openedPapers[activePaperId] ?? null : null;
   const activeRecord = useMemo(
     () => (activePaperId
@@ -150,6 +165,12 @@ export default function App() {
   const effectiveScopeKey = chatScopeKey || (activePaperId ? paperScope(activePaperId) : "");
   const conversations = useMemo(() => normalizeConversations(library), [library]);
   const activeConversation = conversations[effectiveScopeKey];
+  const auxiliaryScopeKey = activePaperId ? `auxiliary:${activePaperId}` : "";
+  const auxiliaryConversation = conversations[auxiliaryScopeKey] ?? (activeRecord ? {
+    id: auxiliaryScopeKey, title: `${activeRecord.title} · 辅助对话`, paperIds: [activeRecord.id],
+    createdAt: activeRecord.openedAt, updatedAt: activeRecord.openedAt, readOnly: false,
+  } : undefined);
+  useEffect(() => { setAuxiliaryError(null); }, [auxiliaryScopeKey]);
   const scopeRecords = (activeConversation?.paperIds ?? [])
     .map((id) => library.papers.find((paper) => paper.id === id))
     .filter((paper): paper is PaperRecord => Boolean(paper));
@@ -357,160 +378,167 @@ export default function App() {
   }, [loadModels, loadReadingLibrary]);
 
   useEffect(() => {
-    const updateAssistant = (
-      scopeKey: string,
-      messageId: string,
-      updater: (message: ChatMessage) => ChatMessage,
-    ) => {
-      setLibrary((previous) => ({
-        ...previous,
-        messagesByScope: {
-          ...previous.messagesByScope,
-          [scopeKey]: (previous.messagesByScope[scopeKey] ?? []).map((message) => (
-            message.id === messageId ? updater(message) : message
-          )),
-        },
-      }));
-    };
-
-    const flushDelta = () => {
-      if (deltaTimerRef.current !== undefined) {
-        window.clearTimeout(deltaTimerRef.current);
-        deltaTimerRef.current = undefined;
-      }
-      const buffered = deltaBufferRef.current;
-      deltaBufferRef.current = null;
-      if (!buffered?.text) return;
-      updateAssistant(buffered.scopeKey, buffered.messageId, (message) => ({
-        ...message,
-        text: buffered.text,
-        firstTextAt: message.firstTextAt ?? Date.now(),
-        responsePhase: "正在输出",
-      }));
-    };
-
-    const queueText = (scopeKey: string, messageId: string, text: string) => {
-      const buffered = deltaBufferRef.current;
-      if (buffered && (buffered.scopeKey !== scopeKey || buffered.messageId !== messageId)) flushDelta();
-      deltaBufferRef.current = { scopeKey, messageId, text };
-      if (deltaTimerRef.current === undefined) {
-        deltaTimerRef.current = window.setTimeout(() => {
-          deltaTimerRef.current = undefined;
-          flushDelta();
-        }, 50);
-      }
-    };
-
-    const listener = (event: CodexEvent) => {
-      const active = activeTurnRef.current;
-      const params = event.params as Record<string, any> | undefined;
-
-      if (event.method === "account/updated" || event.method === "account/login/completed") {
-        window.paperOcean.codex.status().then((nextAccount) => {
-          setAccount(nextAccount);
-          if (nextAccount.connected) {
-            window.paperOcean.codex.rateLimits().then(setRateLimits).catch(() => undefined);
-            loadModels();
-          }
-        });
-      }
-
-      if (event.method === "paperOcean/serverExited") {
-        if (!active) return;
-        flushDelta();
-        const message = typeof params?.message === "string"
-          ? params.message
-          : "Codex 服务意外退出，请重新发送问题。";
-        updateAssistant(active.scopeKey, active.assistantMessageId, (item) => ({
-          ...item,
-          text: item.text || message,
-          pending: false,
-          error: true,
+    const cleanups = [mainLane, auxiliaryLane].map((lane, laneIndex) => {
+      const { activeTurnRef, cancelRequestedRef, deltaBufferRef, deltaTimerRef, answerStreamRef, busyRef, setBusy, setError } = lane;
+      const updateAssistant = (
+        scopeKey: string,
+        messageId: string,
+        updater: (message: ChatMessage) => ChatMessage,
+      ) => {
+        setLibrary((previous) => ({
+          ...previous,
+          messagesByScope: {
+            ...previous.messagesByScope,
+            [scopeKey]: (previous.messagesByScope[scopeKey] ?? []).map((message) => (
+              message.id === messageId ? updater(message) : message
+            )),
+          },
         }));
-        setError(message);
-        cancelRequestedRef.current = false;
-        activeTurnRef.current = null;
-        setBusy(false);
-        return;
-      }
+      };
 
-      if (!active) return;
-      const eventThreadId = params?.threadId ?? params?.turn?.threadId;
-      const eventTurnId = params?.turnId ?? params?.turn?.id;
-      if (eventThreadId && eventThreadId !== active.threadId) return;
-      if (active.turnId && eventTurnId && eventTurnId !== active.turnId) return;
+      const flushDelta = () => {
+        if (deltaTimerRef.current !== undefined) {
+          window.clearTimeout(deltaTimerRef.current);
+          deltaTimerRef.current = undefined;
+        }
+        const buffered = deltaBufferRef.current;
+        deltaBufferRef.current = null;
+        if (!buffered?.text) return;
+        updateAssistant(buffered.scopeKey, buffered.messageId, (message) => ({
+          ...message,
+          text: buffered.text,
+          firstTextAt: message.firstTextAt ?? Date.now(),
+          responsePhase: "正在输出",
+        }));
+      };
 
-      const streamedText = answerStreamRef.current.consume(event.method, params ?? {});
-      if (streamedText) queueText(active.scopeKey, active.assistantMessageId, streamedText);
-      if (event.method === "item/started" && params?.item?.type === "reasoning") {
-        updateAssistant(active.scopeKey, active.assistantMessageId, message => ({ ...message, responsePhase: "思考中" }));
-      }
+      const queueText = (scopeKey: string, messageId: string, text: string) => {
+        const buffered = deltaBufferRef.current;
+        if (buffered && (buffered.scopeKey !== scopeKey || buffered.messageId !== messageId)) flushDelta();
+        deltaBufferRef.current = { scopeKey, messageId, text };
+        if (deltaTimerRef.current === undefined) {
+          deltaTimerRef.current = window.setTimeout(() => {
+            deltaTimerRef.current = undefined;
+            flushDelta();
+          }, 50);
+        }
+      };
 
-      if (event.method === "error") {
-        if (params?.willRetry === true) {
-          updateAssistant(active.scopeKey, active.assistantMessageId, message => ({ ...message, responsePhase: "连接波动，正在重试" }));
+      const listener = (event: CodexEvent) => {
+        const active = activeTurnRef.current;
+        const params = event.params as Record<string, any> | undefined;
+
+        if (laneIndex === 0 && (event.method === "account/updated" || event.method === "account/login/completed")) {
+          window.paperOcean.codex.status().then((nextAccount) => {
+            setAccount(nextAccount);
+            if (nextAccount.connected) {
+              window.paperOcean.codex.rateLimits().then(setRateLimits).catch(() => undefined);
+              loadModels();
+            }
+          });
+        }
+
+        if (event.method === "paperOcean/serverExited") {
+          if (!active) return;
+          flushDelta();
+          const message = typeof params?.message === "string"
+            ? params.message
+            : "Codex 服务意外退出，请重新发送问题。";
+          updateAssistant(active.scopeKey, active.assistantMessageId, (item) => ({
+            ...item,
+            text: item.text || message,
+            pending: false,
+            error: true,
+          }));
+          setError(message);
+          cancelRequestedRef.current = false;
+          activeTurnRef.current = null;
+          busyRef.current = false;
+          setBusy(false);
           return;
         }
-        flushDelta();
-        const message = params?.error?.message ?? "Codex 回答失败";
-        updateAssistant(active.scopeKey, active.assistantMessageId, (item) => ({
-          ...item,
-          text: item.text || message,
-          pending: false,
-          error: true,
-        }));
-        setError(message);
-        cancelRequestedRef.current = false;
-        activeTurnRef.current = null;
-        setBusy(false);
-      }
 
-      if (event.method === "turn/completed") {
-        flushDelta();
-        const status = params?.turn?.status;
-        const failure = params?.turn?.error?.message;
-        updateAssistant(active.scopeKey, active.assistantMessageId, (message) => ({
-          ...message,
-          pending: false,
-          error: status === "failed",
-          interrupted: status === "interrupted",
-          finishedAt: Date.now(),
-          text: message.text || failure || (status === "interrupted" ? "回答已停止。" : "没有生成可显示的回答。"),
-        }));
-        if (failure) setError(failure);
-        cancelRequestedRef.current = false;
-        activeTurnRef.current = null;
-        setBusy(false);
-        window.paperOcean.codex.rateLimits().then(setRateLimits).catch(() => undefined);
-      }
-    };
+        if (!active) return;
+        const eventThreadId = params?.threadId ?? params?.turn?.threadId;
+        const eventTurnId = params?.turnId ?? params?.turn?.id;
+        if (!eventThreadId || eventThreadId !== active.threadId) return;
+        if (active.turnId && eventTurnId && eventTurnId !== active.turnId) return;
 
-    const unsubscribe = window.paperOcean.codex.onEvent(listener);
-    const prepareForClose = (event: Event) => {
-      if (!busyRef.current) return;
-      cancelRequestedRef.current = true;
-      const finishing = (async () => {
-        const active = activeTurnRef.current;
-        if (active?.turnId) await window.paperOcean.codex.interrupt({ threadId: active.threadId, turnId: active.turnId });
-        const deadline = Date.now() + 10_000;
-        while (busyRef.current) {
-          if (Date.now() >= deadline) throw new Error("回答尚未停止，已保留窗口和现有内容。请稍后重试关闭。");
-          await new Promise((resolve) => window.setTimeout(resolve, 25));
+        const streamedText = answerStreamRef.current.consume(event.method, params ?? {});
+        if (streamedText) queueText(active.scopeKey, active.assistantMessageId, streamedText);
+        if (event.method === "item/started" && params?.item?.type === "reasoning") {
+          updateAssistant(active.scopeKey, active.assistantMessageId, message => ({ ...message, responsePhase: "思考中" }));
         }
-        flushDelta();
-      })();
-      (event as CustomEvent<{ waitUntil(task: Promise<unknown>): void }>).detail.waitUntil(finishing);
-    };
-    window.addEventListener("paper-ocean-before-close", prepareForClose);
-    window.addEventListener("paper-ocean-before-save", flushDelta);
-    return () => {
-      unsubscribe();
-      window.removeEventListener("paper-ocean-before-close", prepareForClose);
-      window.removeEventListener("paper-ocean-before-save", flushDelta);
-      if (deltaTimerRef.current !== undefined) window.clearTimeout(deltaTimerRef.current);
-      deltaTimerRef.current = undefined;
-      deltaBufferRef.current = null;
-    };
+
+        if (event.method === "error") {
+          if (params?.willRetry === true) {
+            updateAssistant(active.scopeKey, active.assistantMessageId, message => ({ ...message, responsePhase: "连接波动，正在重试" }));
+            return;
+          }
+          flushDelta();
+          const message = params?.error?.message ?? "Codex 回答失败";
+          updateAssistant(active.scopeKey, active.assistantMessageId, (item) => ({
+            ...item,
+            text: item.text || message,
+            pending: false,
+            error: true,
+          }));
+          setError(message);
+          cancelRequestedRef.current = false;
+          activeTurnRef.current = null;
+          busyRef.current = false;
+          setBusy(false);
+        }
+
+        if (event.method === "turn/completed") {
+          flushDelta();
+          const status = params?.turn?.status;
+          const failure = params?.turn?.error?.message;
+          updateAssistant(active.scopeKey, active.assistantMessageId, (message) => ({
+            ...message,
+            pending: false,
+            error: status === "failed",
+            interrupted: status === "interrupted",
+            finishedAt: Date.now(),
+            text: message.text || failure || (status === "interrupted" ? "回答已停止。" : "没有生成可显示的回答。"),
+          }));
+          if (failure) setError(failure);
+          cancelRequestedRef.current = false;
+          activeTurnRef.current = null;
+          busyRef.current = false;
+          setBusy(false);
+          window.paperOcean.codex.rateLimits().then(setRateLimits).catch(() => undefined);
+        }
+      };
+
+      const unsubscribe = window.paperOcean.codex.onEvent(listener);
+      const prepareForClose = (event: Event) => {
+        if (!busyRef.current) return;
+        cancelRequestedRef.current = true;
+        const finishing = (async () => {
+          const active = activeTurnRef.current;
+          if (active?.turnId) await window.paperOcean.codex.interrupt({ threadId: active.threadId, turnId: active.turnId });
+          const deadline = Date.now() + 10_000;
+          while (busyRef.current) {
+            if (Date.now() >= deadline) throw new Error("回答尚未停止，已保留窗口和现有内容。请稍后重试关闭。");
+            await new Promise((resolve) => window.setTimeout(resolve, 25));
+          }
+          flushDelta();
+        })();
+        (event as CustomEvent<{ waitUntil(task: Promise<unknown>): void }>).detail.waitUntil(finishing);
+      };
+      window.addEventListener("paper-ocean-before-close", prepareForClose);
+      window.addEventListener("paper-ocean-before-save", flushDelta);
+      return () => {
+        unsubscribe();
+        window.removeEventListener("paper-ocean-before-close", prepareForClose);
+        window.removeEventListener("paper-ocean-before-save", flushDelta);
+        if (deltaTimerRef.current !== undefined) window.clearTimeout(deltaTimerRef.current);
+        deltaTimerRef.current = undefined;
+        deltaBufferRef.current = null;
+      };
+    });
+    return () => cleanups.forEach(cleanup => cleanup());
   }, [loadModels]);
 
   const openLocal = async () => {
@@ -617,8 +645,15 @@ export default function App() {
     }
   };
 
-  const sendMessage = async (question: string) => {
-    if (!scopeRecords.length || !effectiveScopeKey || busy) return;
+  const sendMessage = async (question: string, laneName: "main" | "auxiliary" = "main") => {
+    const auxiliary = laneName === "auxiliary";
+    const { activeTurnRef, cancelRequestedRef, answerStreamRef, busyRef, setBusy, setError } = auxiliary ? auxiliaryLane : mainLane;
+    const effectiveScopeKey = auxiliary ? auxiliaryScopeKey : (chatScopeKey || (activePaperId ? paperScope(activePaperId) : ""));
+    const activeConversation = auxiliary ? auxiliaryConversation : conversations[effectiveScopeKey];
+    const scopeRecords = (activeConversation?.paperIds ?? []).map(id => library.papers.find(paper => paper.id === id)).filter((paper): paper is PaperRecord => Boolean(paper));
+    const isMultiScope = scopeRecords.length > 1;
+    const selectedText = selection && scopeRecords.some(paper => paper.id === selection.paperId) ? selection.text : "";
+    if (!scopeRecords.length || !effectiveScopeKey || busyRef.current) return;
     if (activeConversation?.readOnly || scopeRecords.length !== activeConversation?.paperIds.length) {
       setError("这段历史的论文集合无法完整确认，请新建讨论后提问；原有对话会保留。");
       return;
@@ -633,6 +668,8 @@ export default function App() {
       return;
     }
 
+    busyRef.current = true;
+    if (auxiliary) setAuxiliaryBusyScope(effectiveScopeKey);
     setBusy(true);
     cancelRequestedRef.current = false;
     setError(null);
@@ -654,7 +691,7 @@ export default function App() {
       createdAt: Date.now(),
       pending: true,
       responsePhase: "准备论文资料",
-      serviceTier: library.readingPreferencesByScope?.[effectiveScopeKey]?.speed === "standard" ? null : modelSelection.serviceTier ?? null,
+      serviceTier: !auxiliary && library.readingPreferencesByScope?.[effectiveScopeKey]?.speed === "standard" ? null : modelSelection.serviceTier ?? null,
     };
     setLibrary((previous) => ({
       ...previous,
@@ -782,7 +819,7 @@ export default function App() {
         question,
         coverage: conversation.coverage,
         pageImages,
-        answerDepth: library.readingPreferencesByScope?.[effectiveScopeKey]?.depth,
+        answerDepth: auxiliary ? "balanced" : library.readingPreferencesByScope?.[effectiveScopeKey]?.depth,
       });
 
       activeTurnRef.current = {
@@ -804,14 +841,14 @@ export default function App() {
         effort: modelSelection.effort,
         serviceTier: assistantMessage.serviceTier,
       });
-      if (activeTurnRef.current) {
+      if (activeTurnRef.current?.assistantMessageId === assistantMessage.id) {
         activeTurnRef.current.turnId = result.turnId;
         setLibrary(previous => ({ ...previous, messagesByScope: { ...previous.messagesByScope, [effectiveScopeKey]: (previous.messagesByScope[effectiveScopeKey] ?? []).map(message => message.id === assistantMessage.id ? { ...message, serviceTier: result.serviceTier ?? null } : message) } }));
         if (cancelRequestedRef.current) {
           await window.paperOcean.codex.interrupt({ threadId, turnId: result.turnId });
         }
       }
-      setSelection(null);
+      if (!auxiliary) setSelection(null);
     } catch (reason) {
       const cancelled = reason instanceof CancelledTurnError;
       const message = cancelled
@@ -831,12 +868,14 @@ export default function App() {
       if (!cancelled) setError(message);
       cancelRequestedRef.current = false;
       activeTurnRef.current = null;
+      busyRef.current = false;
       setBusy(false);
     }
   };
 
-  const stopAnswer = async () => {
-    if (!busy || cancelRequestedRef.current) return;
+  const stopAnswer = async (laneName: "main" | "auxiliary" = "main") => {
+    const { activeTurnRef, cancelRequestedRef, busyRef, setError } = laneName === "auxiliary" ? auxiliaryLane : mainLane;
+    if (!busyRef.current || cancelRequestedRef.current) return;
     cancelRequestedRef.current = true;
     const active = activeTurnRef.current;
     if (!active?.turnId) return;
@@ -865,7 +904,7 @@ export default function App() {
   const changeChatScope = (scopeKey: string) => {
     if (scopeKey === "all") {
       const ids = openRecords.map((paper) => paper.id);
-      const matching = Object.values(conversations).filter((item) => !item.readOnly && samePaperSet(item.paperIds, ids)).sort((a,b) => b.updatedAt - a.updatedAt)[0];
+      const matching = Object.values(conversations).filter((item) => !item.id.startsWith("auxiliary:") && !item.readOnly && samePaperSet(item.paperIds, ids)).sort((a,b) => b.updatedAt - a.updatedAt)[0];
       if (matching) setChatScopeKey(matching.id);
       else createConversation(ids);
     } else setChatScopeKey(scopeKey.startsWith("paper:") ? preferredPaperConversation(scopeKey.slice(6)) : scopeKey);
@@ -1148,6 +1187,19 @@ export default function App() {
                 setSelection({ id: crypto.randomUUID(), paperId: activePaperId, page, text, rects });
               }}
             />
+            {activeRecord && <AuxiliaryChat
+              paper={activeRecord} scopeKey={auxiliaryScopeKey}
+              messages={library.messagesByScope[auxiliaryScopeKey] ?? []}
+              draft={library.draftsByScope?.[auxiliaryScopeKey] ?? ""}
+              onDraftChange={draft => setLibrary(previous => ({ ...previous, draftsByScope: { ...previous.draftsByScope, [auxiliaryScopeKey]: draft } }))}
+              busy={auxiliaryBusy && auxiliaryBusyScope === auxiliaryScopeKey}
+              blocked={auxiliaryBusy && auxiliaryBusyScope !== auxiliaryScopeKey}
+              ready={Boolean(account?.connected && modelSelection && activeRecord.paperDir && (!auxiliaryBusy || auxiliaryBusyScope === auxiliaryScopeKey))}
+              connected={Boolean(account?.connected)} fast={Boolean(modelSelection?.serviceTier)}
+              error={auxiliaryError} onLogin={login}
+              onSend={question => void sendMessage(question, "auxiliary")}
+              onStop={() => void stopAnswer("auxiliary")} onOpenEvidence={openEvidence}
+            />}
           </div>
           {selectionAnchor && <div className="selection-actions"><span title={selectionAnchor.quote}>第 {selectionAnchor.page} 页 · {selectionAnchor.quote}</span><button type="button" disabled={library.highlights?.some((item) => item.id === selectionAnchor.id)} onClick={saveHighlight}>保存高亮</button><button type="button" onClick={() => createNote("", [selectionAnchor])}>记笔记</button><button type="button" aria-label="清除选文" onClick={() => setSelection(null)}>×</button></div>}
         </>}
@@ -1161,7 +1213,7 @@ export default function App() {
             openPapers={openRecords}
             scopeKey={effectiveScopeKey}
             conversation={activeConversation}
-            conversations={Object.values(conversations).sort((a,b) => b.updatedAt - a.updatedAt)}
+            conversations={Object.values(conversations).filter(item => !item.id.startsWith("auxiliary:")).sort((a,b) => b.updatedAt - a.updatedAt)}
             scopePapers={scopeRecords}
             onNewConversation={() => createConversation()}
             onRenameConversation={(title) => setLibrary((previous) => ({ ...previous, conversations: { ...normalizeConversations(previous), [effectiveScopeKey]: { ...activeConversation, title, updatedAt: Date.now() } } }))}

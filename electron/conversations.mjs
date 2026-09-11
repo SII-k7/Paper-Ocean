@@ -1,5 +1,5 @@
 const PAPER_ID = /^[a-f0-9]{24}$/;
-export const isConversationKey = (value) => typeof value === "string" && (value === "all" || /^paper:[a-f0-9]{24}$/.test(value) || /^conversation:[a-f0-9-]{36}$/.test(value));
+export const isConversationKey = (value) => typeof value === "string" && (value === "all" || /^(?:paper|auxiliary):[a-f0-9]{24}$/.test(value) || /^conversation:[a-f0-9-]{36}$/.test(value));
 
 export function normalizeConversations(library) {
   const conversations = {};
@@ -39,8 +39,8 @@ export function samePaperSet(left, right) {
 
 export function validateConversationPapers(library, scopeKey, paperIds) {
   if (!isConversationKey(scopeKey)) throw new Error("讨论标识无效");
-  if (scopeKey.startsWith("paper:")) {
-    if (!samePaperSet([scopeKey.slice(6)], paperIds)) throw new Error("论文与讨论不匹配");
+  if (scopeKey.startsWith("paper:") || scopeKey.startsWith("auxiliary:")) {
+    if (!samePaperSet([scopeKey.split(":")[1]], paperIds)) throw new Error("论文与讨论不匹配");
     return;
   }
   const conversation = normalizeConversations(library)[scopeKey];
