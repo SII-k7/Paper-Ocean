@@ -10,6 +10,9 @@ for(let i=0;i<objects.length;i++){offsets.push(Buffer.byteLength(bytes));bytes+=
 const start=Buffer.byteLength(bytes);bytes+=`xref\n0 6\n0000000000 65535 f \n${offsets.slice(1).map(value=>String(value).padStart(10,'0')+' 00000 n \n').join('')}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${start}\n%%EOF\n`;await fs.writeFile(pdf,bytes);
 const application=await electron.launch({executablePath:electronPath,args:[path.join(root,'scripts/fixtures/paper-search-entry.mjs')],env:{...process.env,PAPER_OCEAN_SEARCH_FIXTURE:pdf},timeout:30000});
 const page=await application.firstWindow();
+// Own beforeunload dialogs during teardown; the native window may already
+// have closed when Playwright acknowledges the notification.
+page.on('dialog', dialog => { void dialog.accept().catch(() => undefined); });
 try {
  const errors=[];page.setDefaultTimeout(10000);page.on('pageerror',error=>errors.push(error.message));
  await application.evaluate(()=>globalThis.setupSearchTest());await page.reload();
