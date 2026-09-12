@@ -16,6 +16,7 @@ try {
   assert.equal(await application.evaluate(({app})=>app.isPackaged),true);
   const status=await page.evaluate(()=>window.paperOcean.updates.status());
   assert.equal(status.supported,true);assert.equal(status.mode,"nsis");assert.equal(status.currentVersion,version);
+  await page.getByLabel("应用设置",{exact:true}).click();
   await page.getByRole("button",{name:"关于 Paper Ocean 与更新",exact:true}).click();
   await page.getByText("点击一键更新后，将下载安装包、保存阅读记录并重启。",{exact:true}).waitFor();
   await fs.mkdir("output/windows-smoke",{recursive:true});

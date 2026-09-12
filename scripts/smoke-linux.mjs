@@ -25,9 +25,9 @@ app.on("browser-window-created",(_event,window)=> {
         if(!tab) throw new Error('Paper pool tab missing');tab.click();
         await new Promise(resolve=>setTimeout(resolve,200));
         const pool=await window.paperOcean.pool.status();
-        return {platform:window.paperOcean.runtime, pool:pool.papers, dialog:!!document.querySelector('dialog[open]'), view:!!document.querySelector('[aria-label="共享论文列表"]')};
+        return {platform:window.paperOcean.runtime, pool:pool.papers, drawer:!!document.querySelector('aside.library-drawer'), modal:!!document.querySelector('dialog[open]'), view:!!document.querySelector('.library-drawer [aria-label="共享论文列表"]')};
       })()`);
-      if(result.platform !== "electron" || !result.dialog || !result.view || result.pool.length) throw new Error(JSON.stringify(result));
+      if(result.platform !== "electron" || !result.drawer || result.modal || !result.view || result.pool.length) throw new Error(JSON.stringify(result));
       await fs.mkdir("output/linux-smoke",{recursive:true});
       await fs.writeFile("output/linux-smoke/window.png",(await window.capturePage()).toPNG());
       console.log("Linux renderer, preload, library and paper pool verified",JSON.stringify(result));

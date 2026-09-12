@@ -1,0 +1,77 @@
+.library-drawer {
+  position: fixed;
+  z-index: 90;
+  top: calc(var(--app-header-height, 56px) + 10px);
+  bottom: 14px;
+  left: 14px;
+  width: min(360px, calc(100vw - 28px));
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  color: var(--text);
+  background: var(--surface-navigation, var(--panel));
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: 0 18px 54px #0003, 0 2px 8px #0001;
+  animation: library-slide-in 220ms var(--ease-spring);
+}
+.library-drawer > header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; padding: 20px 18px 12px; }
+.library-drawer h2 { margin: 0; font-size: 18px; font-weight: 650; }
+.library-drawer p { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.library-drawer > header p { margin: 5px 0 0; }
+.library-drawer button, .library-drawer select, .library-drawer input { color: var(--text); background: var(--panel-raised); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; font: inherit; font-size: 12px; }
+.library-drawer button { cursor: pointer; }
+.library-drawer > header > button { width: 30px; height: 30px; padding: 0; display: grid; place-items: center; font-size: 22px; background: transparent; border-color: transparent; }
+.library-drawer > .pool-tabs { flex-shrink: 0; margin: 0 16px 8px; padding: 3px; gap: 3px; border: 1px solid var(--line-soft); border-radius: 11px; background: var(--bg); }
+.library-drawer > .pool-tabs button { flex: 1; padding: 8px 5px; border: 0; border-radius: 8px; font-size: 11px; background: transparent; }
+.library-drawer > .pool-tabs button[aria-pressed="true"] { background: var(--panel-raised); color: var(--text); box-shadow: 0 1px 4px #0001; }
+.library-drawer__body, .library-drawer > .paper-pool { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
+.library-drawer .library-filters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px 16px 14px; }
+.library-drawer .library-filters input { grid-column: 1 / -1; width: 100%; min-width: 0; padding: 10px 11px; }
+.library-drawer .library-filters select, .library-drawer .library-filters button { min-width: 0; width: 100%; }
+.library-drawer .library-archive { margin: 0 16px 10px; padding: 11px 12px; background: transparent; border-color: var(--line-soft); border-radius: 10px; }
+.library-drawer .library-archive > summary { display: flex; justify-content: space-between; align-items: center; gap: 10px; list-style: none; }
+.library-drawer .library-archive > summary::after { content: "⌄"; color: var(--muted); }
+.library-drawer .library-archive[open] > summary::after { transform: rotate(180deg); }
+.library-drawer .library-archive > summary span { margin-left: auto; font-size: 11px; }
+.library-drawer .library-archive > summary strong { font-size: 12px; font-weight: 550; }
+.library-drawer .library-archive > p { margin: 10px 0 5px; }
+.library-drawer .library-results { padding: 0 16px 22px; min-height: 0; overflow: visible; }
+.library-drawer .library-results article { padding: 14px 0; border-color: var(--line-soft); }
+.library-drawer .library-paper-heading { display: block; }
+.library-drawer .library-paper-title { color: var(--text); font-size: 13px; line-height: 1.55; font-weight: 600; }
+.library-drawer .library-paper-title:hover { color: var(--accent); }
+.library-drawer .library-authors { margin: 5px 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; font-size: 11px; }
+.library-paper-overview { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; color: var(--muted); font-size: 10px; margin-top: 8px; }
+.library-paper-overview [data-status="reading"] { color: var(--accent); }
+.library-drawer .library-paper-management { margin-top: 9px; color: var(--muted); font-size: 11px; }
+.library-drawer summary { width: auto; cursor: pointer; }
+.library-drawer summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 4px; border-radius: 3px; }
+.library-drawer .library-paper-management > summary { width: fit-content; }
+.library-drawer .library-reading-status { display: flex; align-items: center; gap: 8px; margin: 12px 0 6px; }
+.library-drawer .library-paper-category { margin: 7px 0; gap: 8px; }
+.library-drawer .library-paper-meta { gap: 6px 10px; margin: 7px 0; font-size: 10px; }
+.library-drawer .library-source button { margin: 4px 6px 0 0; }
+.library-drawer code { overflow-wrap: anywhere; font-size: 10px; }
+.library-drawer .library-message { margin: 0 16px 8px; padding: 10px; border-radius: 8px; background: var(--accent-soft); color: var(--text); }
+.library-drawer .pool-intro, .library-drawer .pool-status { padding: 0 16px; margin: 8px 0 12px; }
+.library-drawer .pool-settings { margin: 0 16px 12px; }
+.library-drawer .pool-settings form { min-width: 0; padding: 0; }
+.library-drawer .pool-settings label { grid-template-columns: 1fr; gap: 5px; }
+.library-drawer .pool-settings input { min-width: 0; width: 100%; }
+.library-drawer .pool-settings button { margin-top: 5px; }
+.library-drawer .paper-pool h3 { font-size: 13px; line-height: 1.5; margin: 0; }
+.library-drawer .pool-actions { flex-wrap: wrap; }
+.workspace-grid[data-resizing="true"] { transition: none; }
+.note-scope { display: flex; align-items: center; gap: 3px; padding: 3px; margin-bottom: 12px; border-radius: 10px; background: var(--bg); }
+.notes-panel .note-scope button { background: transparent; border: 0; border-radius: 8px; padding: 8px 11px; }
+.notes-panel .note-scope button[aria-pressed="true"] { color: var(--text); background: var(--panel-raised); box-shadow: 0 1px 4px #0001; }
+.note-scope > span { margin-left: auto; padding: 0 9px; color: var(--muted); font-size: 11px; }
+.notes-scope-message { padding: 12px; margin: 10px 0; border: 1px dashed var(--line); border-radius: 10px; }
+.notes-scope-message p, .notes-scope-notice { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 0 0 8px; }
+.notes-scope-notice { margin: 10px 0; padding-left: 10px; border-left: 2px solid var(--accent); }
+@keyframes library-slide-in { from { opacity: 0; transform: translateX(-12px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .library-drawer { animation: none; } }
+:root[data-motion="reduced"] .library-drawer { animation: none; }
+@media (forced-colors: active) { .library-drawer { border-color: CanvasText; box-shadow: none; } }

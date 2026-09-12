@@ -1,0 +1,114 @@
+{
+  "recordedAt": "2026-09-12T05:33:33.769Z",
+  "description": "Controlled Electron renderer measurement; synthetic PDF + mock dual-lane chunks + real renderer text insertion. Not model response latency.",
+  "environment": {
+    "platform": "win32",
+    "arch": "x64",
+    "node": "25.6.1",
+    "electron": "43.4.0",
+    "hardwareAcceleration": "disabled by shared isolated fixture",
+    "viewport": {
+      "width": 1440,
+      "height": 1000
+    },
+    "visibilityState": "visible"
+  },
+  "workload": {
+    "chunkCountPerLane": 180,
+    "intervalMs": 40,
+    "initialMarkdownCharactersPerLane": 957,
+    "inputEventsPerLane": 36,
+    "durationMs": 8670.5
+  },
+  "methodology": {
+    "ipcClock": "Date.now across processes (1ms resolution); renderer durations use performance.now",
+    "visibleFrame": "Two requestAnimationFrame callbacks after marker enters DOM, plus marker/scroll-viewport intersection. Proxy for paint opportunity; actual GPU presentation is not measured.",
+    "instrumentation": "Extra IPC observer, MutationObserver, bounded text-range lookup and frame/longtask observers add measurement overhead."
+  },
+  "lanes": {
+    "main": {
+      "mainIpcToRendererMs": {
+        "samples": 180,
+        "p50Ms": 1,
+        "p95Ms": 1,
+        "maxMs": 7
+      },
+      "rendererToDomMs": {
+        "samples": 180,
+        "p50Ms": 39.2,
+        "p95Ms": 59,
+        "maxMs": 63.9
+      },
+      "rendererToVisibleFrameMs": {
+        "samples": 180,
+        "p50Ms": 41.5,
+        "p95Ms": 69.4,
+        "maxMs": 76.8
+      },
+      "mainIpcToVisibleFrameMs": {
+        "samples": 180,
+        "p50Ms": 42.1,
+        "p95Ms": 70.4,
+        "maxMs": 77.3
+      },
+      "outsideViewportAtFrame": 0,
+      "inputEventToAnimationFrameMs": {
+        "samples": 36,
+        "p50Ms": 2.4,
+        "p95Ms": 9.1,
+        "maxMs": 9.9
+      }
+    },
+    "auxiliary": {
+      "mainIpcToRendererMs": {
+        "samples": 180,
+        "p50Ms": 1,
+        "p95Ms": 1,
+        "maxMs": 12
+      },
+      "rendererToDomMs": {
+        "samples": 180,
+        "p50Ms": 39.2,
+        "p95Ms": 62.1,
+        "maxMs": 67.8
+      },
+      "rendererToVisibleFrameMs": {
+        "samples": 180,
+        "p50Ms": 49.2,
+        "p95Ms": 69.8,
+        "maxMs": 76.9
+      },
+      "mainIpcToVisibleFrameMs": {
+        "samples": 180,
+        "p50Ms": 50.2,
+        "p95Ms": 71.9,
+        "maxMs": 81.8
+      },
+      "outsideViewportAtFrame": 0,
+      "inputEventToAnimationFrameMs": {
+        "samples": 36,
+        "p50Ms": 2.3,
+        "p95Ms": 11,
+        "maxMs": 13.7
+      }
+    }
+  },
+  "frameIntervals": {
+    "samples": 1364,
+    "p50Ms": 5.6,
+    "p95Ms": 11.2,
+    "maxMs": 16.8,
+    "over33ms": 0,
+    "over50ms": 0
+  },
+  "longTasks": {
+    "supported": true,
+    "count": 0,
+    "totalMs": 0,
+    "samples": 0,
+    "p50Ms": null,
+    "p95Ms": null,
+    "maxMs": null
+  },
+  "rendererErrors": []
+}

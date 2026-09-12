@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FileText, Library, Moon, Plus, Settings, Sun, X } from "lucide-react";
+import { ArrowLeft, MessageSquare, NotebookPen, X } from "lucide-react";
 import PaperSearch from "./components/PaperSearch";
 import { fixedReadingSelection } from "../electron/reading-model.mjs";
-import { createAnswerStream } from "./answer-stream.mjs";
+import { CancelledTurnError, conversationRuntime } from "./conversation-runtime.mjs";
+import useConversationLane from "./hooks/useConversationLane";
+import useWorkspaceController from "./hooks/useWorkspaceController";
+import WorkspaceToolbar from "./components/WorkspaceToolbar";
+import ReaderPaperHeader from "./components/ReaderPaperHeader";
 import ChatPanel from "./components/ChatPanel";
 import AuxiliaryChat from "./components/AuxiliaryChat";
 import NotesPanel from "./components/NotesPanel";
@@ -14,15 +18,11 @@ import ResizableWorkspace from "./components/ResizableWorkspace";
 import useLibrary from "./hooks/useLibrary";
 import usePaperDownload from "./hooks/usePaperDownload";
 import DownloadStatus from "./components/DownloadStatus";
-import AboutPanel from "./components/AboutPanel";
-import AppearanceSettings from "./components/AppearanceSettings";
-import paperOceanMark from "./assets/paper-ocean-mark.png";
 import { buildPaperTurnPrompt } from "../electron/paper-prompt.mjs";
 import { normalizeConversations, samePaperSet } from "../electron/conversations.mjs";
 import type {
   ChatMessage,
   CodexAccount,
-  CodexEvent,
   CodexModel,
   CodexSelection,
   ReadingPosition,
@@ -35,13 +35,6 @@ import type {
   ResearchNote,
 } from "./types";
 
-type ActiveTurn = {
-  threadId: string;
-  turnId?: string;
-  scopeKey: string;
-  assistantMessageId: string;
-};
-
 type Selection = {
   id: string;
   paperId: string;
@@ -49,8 +42,6 @@ type Selection = {
   text: string;
   rects: EvidenceRect[];
 };
-
-class CancelledTurnError extends Error {}
 
 type Theme = "dark" | "light";
 
@@ -100,11 +91,6 @@ function restoredPaper(opened: OpenedPaper, record: PaperRecord): OpenedPaper {
 
 export default function App() {
   const readerRef = useRef<PdfReaderHandle>(null);
-  const activeTurnRef = useRef<ActiveTurn | null>(null);
-  const cancelRequestedRef = useRef(false);
-  const deltaBufferRef = useRef<{ scopeKey: string; messageId: string; text: string } | null>(null);
-  const deltaTimerRef = useRef<number | undefined>(undefined);
-  const answerStreamRef = useRef(createAnswerStream());
   const themeTransitionTimerRef = useRef<number | undefined>(undefined);
   const bootedRef = useRef(false);
   const [theme, setTheme] = useState<Theme>(initialTheme);
@@ -113,11 +99,11 @@ export default function App() {
   const [pagesByPaper, setPagesByPaper] = useState<Record<string, PdfPageIndex[]>>({});
   const [currentPage, setCurrentPage] = useState(1);
   const [selection, setSelection] = useState<Selection | null>(null);
-  const [sidePanel, setSidePanel] = useState<"chat" | "notes">("chat");
+  const workspace = useWorkspaceController();
+  const { sidePanel } = workspace;
   const [selectedNoteId, setSelectedNoteId] = useState<string>();
-  const [discussionRequest, setDiscussionRequest] = useState(0);
   const [sourceJump, setSourceJump] = useState(0);
-  const [showLibrary, setShowLibrary] = useState(false);
+  const [auxiliarySourceJump, setAuxiliarySourceJump] = useState<{ scopeKey: string; messageId: string; requestId: number }>();
   const [chatScopeKey, setChatScopeKey] = useState("");
   const { library, setLibrary, libraryReady, initializeLibrary, saveState, flushLibrary } = useLibrary();
   const [libraryError, setLibraryError] = useState<string | null>(null);
@@ -126,30 +112,25 @@ export default function App() {
   const [models, setModels] = useState<CodexModel[]>([]);
   const [modelError, setModelError] = useState<string | null>(null);
   const [rateLimits, setRateLimits] = useState<RateLimitInfo | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [busyScope, setBusyScope] = useState("");
-  const busyRef = useRef(busy);
-  busyRef.current = busy;
+  const { busy, busyScope, error: conversationError, errorScope: conversationErrorScope } = useConversationLane("main");
+  const { busy: auxiliaryBusy, busyScope: auxiliaryBusyScope, error: auxiliaryError, errorScope: auxiliaryErrorScope } = useConversationLane("auxiliary");
   const [opening, setOpening] = useState(false);
   const download = usePaperDownload();
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [destination, setDestination] = useState<{ paperId: string; position: ReadingPosition; requestId: number }>();
   const [evidenceHistory, setEvidenceHistory] = useState<Array<{ paperId: string; position: ReadingPosition }>>([]);
+  useEffect(() => { if (destination) document.querySelector<HTMLElement>('.pdf-stage')?.focus({ preventScroll: true }); }, [destination]);
 
-  const auxiliaryActiveTurnRef = useRef<ActiveTurn | null>(null);
-  const auxiliaryCancelRef = useRef(false);
-  const auxiliaryBufferRef = useRef<{ scopeKey: string; messageId: string; text: string } | null>(null);
-  const auxiliaryTimerRef = useRef<number | undefined>(undefined);
-  const auxiliaryStreamRef = useRef(createAnswerStream());
-  const [auxiliaryBusy, setAuxiliaryBusy] = useState(false);
-  const [auxiliaryBusyScope, setAuxiliaryBusyScope] = useState("");
-  const auxiliaryBusyRef = useRef(false);
-  const [auxiliaryError, setAuxiliaryError] = useState<string | null>(null);
-  const mainLane = { activeTurnRef, cancelRequestedRef, deltaBufferRef, deltaTimerRef, answerStreamRef, busyRef, setBusy, setError };
-  const auxiliaryLane = { activeTurnRef: auxiliaryActiveTurnRef, cancelRequestedRef: auxiliaryCancelRef,
-    deltaBufferRef: auxiliaryBufferRef, deltaTimerRef: auxiliaryTimerRef, answerStreamRef: auxiliaryStreamRef,
-    busyRef: auxiliaryBusyRef, setBusy: setAuxiliaryBusy, setError: setAuxiliaryError };
+  const [auxiliaryExpanded, setAuxiliaryExpanded] = useState(() => { try { return localStorage.getItem("paper-ocean-auxiliary-expanded") === "true"; } catch { return false; } });
+  const [composerFocus, setComposerFocus] = useState({ main: 0, auxiliary: 0 });
+  const [savedNote, setSavedNote] = useState<{ note: ResearchNote; status: "saving" | "saved" | "error" } | null>(null);
+  useEffect(() => { try { localStorage.setItem("paper-ocean-auxiliary-expanded", String(auxiliaryExpanded)); } catch { /* Session controls remain available. */ } }, [auxiliaryExpanded]);
+  useEffect(() => {
+    const target = workspace.focusRequest?.target;
+    const selector = target === "reader" ? '.pdf-stage' : target === "notes" ? '.notes-panel [aria-label="笔记标题"], .notes-panel [aria-label="搜索笔记"]' : target === "chat" ? '.chat-panel textarea' : null;
+    if (selector) document.querySelector<HTMLElement>(selector)?.focus({ preventScroll: true });
+  }, [workspace.focusRequest]);
 
   const activePaper = activePaperId ? openedPapers[activePaperId] ?? null : null;
   const activeRecord = useMemo(
@@ -172,7 +153,8 @@ export default function App() {
     id: auxiliaryScopeKey, title: `${activeRecord.title} · 辅助对话`, paperIds: [activeRecord.id],
     createdAt: activeRecord.openedAt, updatedAt: activeRecord.openedAt, readOnly: false,
   } : undefined);
-  useEffect(() => { setAuxiliaryError(null); }, [auxiliaryScopeKey]);
+  useEffect(() => { conversationRuntime.clearError("auxiliary"); }, [auxiliaryScopeKey]);
+  useEffect(() => { conversationRuntime.clearError("main"); }, [effectiveScopeKey]);
   const scopeRecords = (activeConversation?.paperIds ?? [])
     .map((id) => library.papers.find((paper) => paper.id === id))
     .filter((paper): paper is PaperRecord => Boolean(paper));
@@ -183,9 +165,12 @@ export default function App() {
   };
   const pages = activePaperId ? pagesByPaper[activePaperId] ?? [] : [];
   const messages = effectiveScopeKey ? library.messagesByScope[effectiveScopeKey] ?? [] : [];
-  const selectedText = selection && scopeRecords.some((paper) => paper.id === selection.paperId)
-    ? selection.text
-    : "";
+  const attachmentFor = (scopeKey: string) => {
+    const anchor = library.draftAttachmentsByScope?.[scopeKey];
+    if (!anchor) return null;
+    return { ...anchor, paperTitle: library.papers.find(paper => paper.id === anchor.paperId)?.title ?? "原文暂不可用" };
+  };
+  const removeAttachment = (scopeKey: string) => setLibrary(previous => ({ ...previous, draftAttachmentsByScope: { ...previous.draftAttachmentsByScope, [scopeKey]: undefined } }));
   const modelSelection = useMemo(
     () => fixedReadingSelection(models),
     [models],
@@ -379,169 +364,22 @@ export default function App() {
       error: reason instanceof Error ? reason.message : String(reason) }));
   }, [loadModels, loadReadingLibrary]);
 
-  useEffect(() => {
-    const cleanups = [mainLane, auxiliaryLane].map((lane, laneIndex) => {
-      const { activeTurnRef, cancelRequestedRef, deltaBufferRef, deltaTimerRef, answerStreamRef, busyRef, setBusy, setError } = lane;
-      const updateAssistant = (
-        scopeKey: string,
-        messageId: string,
-        updater: (message: ChatMessage) => ChatMessage,
-      ) => {
-        setLibrary((previous) => ({
-          ...previous,
-          messagesByScope: {
-            ...previous.messagesByScope,
-            [scopeKey]: (previous.messagesByScope[scopeKey] ?? []).map((message) => (
-              message.id === messageId ? updater(message) : message
-            )),
-          },
-        }));
-      };
-
-      const flushDelta = () => {
-        if (deltaTimerRef.current !== undefined) {
-          window.clearTimeout(deltaTimerRef.current);
-          deltaTimerRef.current = undefined;
-        }
-        const buffered = deltaBufferRef.current;
-        deltaBufferRef.current = null;
-        if (!buffered?.text) return;
-        updateAssistant(buffered.scopeKey, buffered.messageId, (message) => ({
-          ...message,
-          text: buffered.text,
-          firstTextAt: message.firstTextAt ?? Date.now(),
-          responsePhase: "正在输出",
-        }));
-      };
-
-      const queueText = (scopeKey: string, messageId: string, text: string) => {
-        const buffered = deltaBufferRef.current;
-        if (buffered && (buffered.scopeKey !== scopeKey || buffered.messageId !== messageId)) flushDelta();
-        deltaBufferRef.current = { scopeKey, messageId, text };
-        if (deltaTimerRef.current === undefined) {
-          deltaTimerRef.current = window.setTimeout(() => {
-            deltaTimerRef.current = undefined;
-            flushDelta();
-          }, 50);
-        }
-      };
-
-      const listener = (event: CodexEvent) => {
-        const active = activeTurnRef.current;
-        const params = event.params as Record<string, any> | undefined;
-
-        if (laneIndex === 0 && (event.method === "account/updated" || event.method === "account/login/completed")) {
-          window.paperOcean.codex.status().then((nextAccount) => {
-            setAccount(nextAccount);
-            if (nextAccount.connected) {
-              window.paperOcean.codex.rateLimits().then(setRateLimits).catch(() => undefined);
-              loadModels();
-            }
-          });
-        }
-
-        if (event.method === "paperOcean/serverExited") {
-          if (!active) return;
-          flushDelta();
-          const message = typeof params?.message === "string"
-            ? params.message
-            : "Codex 服务意外退出，请重新发送问题。";
-          updateAssistant(active.scopeKey, active.assistantMessageId, (item) => ({
-            ...item,
-            text: item.text || message,
-            pending: false,
-            error: true,
-          }));
-          setError(message);
-          cancelRequestedRef.current = false;
-          activeTurnRef.current = null;
-          busyRef.current = false;
-          setBusy(false);
-          return;
-        }
-
-        if (!active) return;
-        const eventThreadId = params?.threadId ?? params?.turn?.threadId;
-        const eventTurnId = params?.turnId ?? params?.turn?.id;
-        if (!eventThreadId || eventThreadId !== active.threadId) return;
-        if (active.turnId && eventTurnId && eventTurnId !== active.turnId) return;
-
-        const streamedText = answerStreamRef.current.consume(event.method, params ?? {});
-        if (streamedText) queueText(active.scopeKey, active.assistantMessageId, streamedText);
-        if (event.method === "item/started" && params?.item?.type === "reasoning") {
-          updateAssistant(active.scopeKey, active.assistantMessageId, message => ({ ...message, responsePhase: "思考中" }));
-        }
-
-        if (event.method === "error") {
-          if (params?.willRetry === true) {
-            updateAssistant(active.scopeKey, active.assistantMessageId, message => ({ ...message, responsePhase: "连接波动，正在重试" }));
-            return;
-          }
-          flushDelta();
-          const message = params?.error?.message ?? "Codex 回答失败";
-          updateAssistant(active.scopeKey, active.assistantMessageId, (item) => ({
-            ...item,
-            text: item.text || message,
-            pending: false,
-            error: true,
-          }));
-          setError(message);
-          cancelRequestedRef.current = false;
-          activeTurnRef.current = null;
-          busyRef.current = false;
-          setBusy(false);
-        }
-
-        if (event.method === "turn/completed") {
-          flushDelta();
-          const status = params?.turn?.status;
-          const failure = params?.turn?.error?.message;
-          updateAssistant(active.scopeKey, active.assistantMessageId, (message) => ({
-            ...message,
-            pending: false,
-            error: status === "failed",
-            interrupted: status === "interrupted",
-            finishedAt: Date.now(),
-            text: message.text || failure || (status === "interrupted" ? "回答已停止。" : "没有生成可显示的回答。"),
-          }));
-          if (failure) setError(failure);
-          cancelRequestedRef.current = false;
-          activeTurnRef.current = null;
-          busyRef.current = false;
-          setBusy(false);
-          window.paperOcean.codex.rateLimits().then(setRateLimits).catch(() => undefined);
-        }
-      };
-
-      const unsubscribe = window.paperOcean.codex.onEvent(listener);
-      const prepareForClose = (event: Event) => {
-        if (!busyRef.current) return;
-        cancelRequestedRef.current = true;
-        const finishing = (async () => {
-          const active = activeTurnRef.current;
-          if (active?.turnId) await window.paperOcean.codex.interrupt({ threadId: active.threadId, turnId: active.turnId });
-          const deadline = Date.now() + 10_000;
-          while (busyRef.current) {
-            if (Date.now() >= deadline) throw new Error("回答尚未停止，已保留窗口和现有内容。请稍后重试关闭。");
-            await new Promise((resolve) => window.setTimeout(resolve, 25));
-          }
-          flushDelta();
-        })();
-        (event as CustomEvent<{ waitUntil(task: Promise<unknown>): void }>).detail.waitUntil(finishing);
-      };
-      window.addEventListener("paper-ocean-before-close", prepareForClose);
-      window.addEventListener("paper-ocean-before-save", flushDelta);
-      return () => {
-        unsubscribe();
-        window.removeEventListener("paper-ocean-before-close", prepareForClose);
-        window.removeEventListener("paper-ocean-before-save", flushDelta);
-        if (deltaTimerRef.current !== undefined) window.clearTimeout(deltaTimerRef.current);
-        deltaTimerRef.current = undefined;
-        deltaBufferRef.current = null;
-      };
-    });
-    return () => cleanups.forEach(cleanup => cleanup());
-  }, [loadModels]);
+  useEffect(() => conversationRuntime.attach({
+    persist: patches => setLibrary(previous => {
+      const messagesByScope = { ...previous.messagesByScope };
+      for (const { scopeKey, messageId, patch } of patches) {
+        messagesByScope[scopeKey] = (messagesByScope[scopeKey] ?? []).map(message => message.id === messageId ? { ...message, ...patch } : message);
+      }
+      return { ...previous, messagesByScope };
+    }),
+    onEvent: listener => window.paperOcean.codex.onEvent(listener),
+    interrupt: input => window.paperOcean.codex.interrupt(input),
+    onAccountEvent: () => { void window.paperOcean.codex.status().then(nextAccount => {
+      setAccount(nextAccount);
+      if (nextAccount.connected) { void window.paperOcean.codex.rateLimits().then(setRateLimits).catch(() => undefined); loadModels(); }
+    }).catch(() => undefined); },
+    onTurnCompleted: () => { void window.paperOcean.codex.rateLimits().then(setRateLimits).catch(() => undefined); },
+  }, window), [loadModels, setLibrary]);
 
   const openLocal = async () => {
     if (!libraryReady || loadingLibrary) return;
@@ -649,13 +487,17 @@ export default function App() {
 
   const sendMessage = async (question: string, laneName: "main" | "auxiliary" = "main") => {
     const auxiliary = laneName === "auxiliary";
-    const { activeTurnRef, cancelRequestedRef, answerStreamRef, busyRef, setBusy, setError } = auxiliary ? auxiliaryLane : mainLane;
     const effectiveScopeKey = auxiliary ? auxiliaryScopeKey : (chatScopeKey || (activePaperId ? paperScope(activePaperId) : ""));
+    const setError = (message: string | null) => conversationRuntime.setError(laneName, message, effectiveScopeKey);
     const activeConversation = auxiliary ? auxiliaryConversation : conversations[effectiveScopeKey];
     const scopeRecords = (activeConversation?.paperIds ?? []).map(id => library.papers.find(paper => paper.id === id)).filter((paper): paper is PaperRecord => Boolean(paper));
     const isMultiScope = scopeRecords.length > 1;
-    const selectedText = selection && scopeRecords.some(paper => paper.id === selection.paperId) ? selection.text : "";
-    if (!scopeRecords.length || !effectiveScopeKey || busyRef.current) return;
+    const attachment = library.draftAttachmentsByScope?.[effectiveScopeKey];
+    const selectedText = attachment?.quote ?? "";
+    if (!scopeRecords.length || !effectiveScopeKey || conversationRuntime.isBusy(laneName)) return;
+    if (attachment && !scopeRecords.some(paper => paper.id === attachment.paperId)) {
+      setError("选文附件不属于这段讨论的论文，请移除附件或切换到对应论文的讨论。"); return;
+    }
     if (activeConversation?.readOnly || scopeRecords.length !== activeConversation?.paperIds.length) {
       setError("这段历史的论文集合无法完整确认，请新建讨论后提问；原有对话会保留。");
       return;
@@ -670,21 +512,16 @@ export default function App() {
       return;
     }
 
-    busyRef.current = true;
-    if (auxiliary) setAuxiliaryBusyScope(effectiveScopeKey);
-    else setBusyScope(effectiveScopeKey);
-    setBusy(true);
-    cancelRequestedRef.current = false;
     setError(null);
-    const messagePage = activePaperId && scopeRecords.some((paper) => paper.id === activePaperId)
-      ? currentPage
-      : undefined;
+    const messagePaperId = attachment?.paperId ?? (scopeRecords.some(paper => paper.id === activePaperId) ? activePaperId : undefined);
+    const messagePage = attachment?.page ?? (messagePaperId ? currentPage : undefined);
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
       text: question,
+      attachment,
       page: messagePage,
-      paperId: messagePage ? activePaperId : undefined,
+      paperId: messagePage ? messagePaperId : undefined,
       createdAt: Date.now(),
     };
     const assistantMessage: ChatMessage = {
@@ -696,8 +533,12 @@ export default function App() {
       responsePhase: "准备论文资料",
       serviceTier: !auxiliary && library.readingPreferencesByScope?.[effectiveScopeKey]?.speed === "standard" ? null : modelSelection.serviceTier ?? null,
     };
+    let run: ReturnType<typeof conversationRuntime.begin>;
+    try { run = conversationRuntime.begin(laneName, effectiveScopeKey, assistantMessage); }
+    catch (reason) { setError(reason instanceof CancelledTurnError ? "正在保存并关闭窗口，请稍候。" : String(reason)); return; }
     setLibrary((previous) => ({
       ...previous,
+      draftAttachmentsByScope: attachment && previous.draftAttachmentsByScope?.[effectiveScopeKey]?.id === attachment.id ? { ...previous.draftAttachmentsByScope, [effectiveScopeKey]: undefined } : previous.draftAttachmentsByScope,
       conversations: { ...normalizeConversations(previous), [effectiveScopeKey]: { ...activeConversation, updatedAt: Date.now() } },
       draftsByScope: { ...previous.draftsByScope, [effectiveScopeKey]: previous.draftsByScope?.[effectiveScopeKey]?.trim() === question.trim() ? "" : previous.draftsByScope?.[effectiveScopeKey] ?? "" },
       messagesByScope: {
@@ -710,12 +551,8 @@ export default function App() {
       },
     }));
 
-    const throwIfCancelled = () => {
-      if (cancelRequestedRef.current) throw new CancelledTurnError();
-    };
-    const setPhase = (responsePhase: string, extra: Partial<ChatMessage> = {}) => setLibrary(previous => ({
-      ...previous, messagesByScope: { ...previous.messagesByScope, [effectiveScopeKey]: (previous.messagesByScope[effectiveScopeKey] ?? []).map(message => message.id === assistantMessage.id ? { ...message, responsePhase, ...extra } : message) },
-    }));
+    const throwIfCancelled = () => conversationRuntime.checkCancelled(run);
+    const setPhase = (responsePhase: string, extra: Partial<ChatMessage> = {}) => conversationRuntime.patch(run, { responsePhase, ...extra });
 
     try {
       const preparedRecords: PaperRecord[] = [];
@@ -741,13 +578,11 @@ export default function App() {
         scopeKey: effectiveScopeKey,
         papers: preparedRecords,
         question,
-        currentPaperId: activePaperId,
+        currentPaperId: messagePaperId,
         currentPage: messagePage,
       });
       throwIfCancelled();
-      if (conversation.coverage) setLibrary((previous) => ({
-        ...previous, messagesByScope: { ...previous.messagesByScope, [effectiveScopeKey]: (previous.messagesByScope[effectiveScopeKey] ?? []).map((item) => item.id === assistantMessage.id ? { ...item, contextCoverage: conversation.coverage } : item) },
-      }));
+      if (conversation.coverage) conversationRuntime.patch(run, { contextCoverage: conversation.coverage });
 
       let threadId: string | undefined = library.threadsByScope[effectiveScopeKey];
       setPhase("连接会话");
@@ -783,10 +618,10 @@ export default function App() {
 
       const pageImages: Array<{ path: string; paperId: string; page: number }> = [];
       setPhase("准备页图证据");
-      const evidencePaper = preparedRecords.find((paper) => paper.id === activePaperId) ?? (preparedRecords.length === 1 ? preparedRecords[0] : undefined);
+      const evidencePaper = preparedRecords.find((paper) => paper.id === messagePaperId) ?? (preparedRecords.length === 1 ? preparedRecords[0] : undefined);
       if (evidencePaper) {
         const requestedPages = [...question.matchAll(/(?:第\s*)?([1-9]\d*)\s*页|\bpage\s+([1-9]\d*)/giu)].map((match) => Number(match[1] ?? match[2]));
-        const selectedPage = selection?.paperId === evidencePaper.id ? selection.page : undefined;
+        const selectedPage = attachment?.paperId === evidencePaper.id ? attachment.page : undefined;
         const defaultPage = evidencePaper.id === activePaperId ? currentPage : evidencePaper.lastPage ?? 1;
         const targets = [...new Set([...requestedPages, selectedPage ?? defaultPage])].filter((page) => page > 0 && page <= (evidencePaper.pageCount ?? 10_000)).slice(0,3);
         let source = openedPapers[evidencePaper.id];
@@ -806,7 +641,7 @@ export default function App() {
           } catch (reason) { if (reason instanceof CancelledTurnError) throw reason; }
         }
       }
-      setLibrary((previous) => ({ ...previous, messagesByScope: { ...previous.messagesByScope, [effectiveScopeKey]: (previous.messagesByScope[effectiveScopeKey] ?? []).map((item) => item.id === assistantMessage.id ? { ...item, pageImages: pageImages.map(({ paperId, page }) => ({ paperId, page })) } : item) } }));
+      conversationRuntime.patch(run, { pageImages: pageImages.map(({ paperId, page }) => ({ paperId, page })) });
 
       const prompt = buildPaperTurnPrompt({
         mode: isMultiScope ? "all" : "single",
@@ -816,8 +651,8 @@ export default function App() {
           title: paper.title,
           pageCount: paper.pageCount,
         })),
-        currentPaperTitle: activeRecord && messagePage ? activeRecord.title : undefined,
-        currentPage: activeRecord && messagePage ? currentPage : undefined,
+        currentPaperTitle: preparedRecords.find(paper => paper.id === messagePaperId)?.title,
+        currentPage: messagePage,
         hasSelection: Boolean(selectedText),
         question,
         coverage: conversation.coverage,
@@ -825,12 +660,7 @@ export default function App() {
         answerDepth: auxiliary ? "balanced" : library.readingPreferencesByScope?.[effectiveScopeKey]?.depth,
       });
 
-      activeTurnRef.current = {
-        threadId,
-        scopeKey: effectiveScopeKey,
-        assistantMessageId: assistantMessage.id,
-      };
-      answerStreamRef.current = createAnswerStream();
+      conversationRuntime.bindThread(run, threadId);
       throwIfCancelled();
       setPhase("等待模型响应", { sentAt: Date.now() });
       const result = await window.paperOcean.codex.sendTurn({
@@ -844,55 +674,13 @@ export default function App() {
         effort: modelSelection.effort,
         serviceTier: assistantMessage.serviceTier,
       });
-      if (activeTurnRef.current?.assistantMessageId === assistantMessage.id) {
-        activeTurnRef.current.turnId = result.turnId;
-        setLibrary(previous => ({ ...previous, messagesByScope: { ...previous.messagesByScope, [effectiveScopeKey]: (previous.messagesByScope[effectiveScopeKey] ?? []).map(message => message.id === assistantMessage.id ? { ...message, serviceTier: result.serviceTier ?? null } : message) } }));
-        if (cancelRequestedRef.current) {
-          await window.paperOcean.codex.interrupt({ threadId, turnId: result.turnId });
-        }
-      }
-      if (!auxiliary) setSelection(null);
+      await conversationRuntime.bindTurn(run, result);
     } catch (reason) {
-      const cancelled = reason instanceof CancelledTurnError;
-      const message = cancelled
-        ? "回答已停止。"
-        : reason instanceof Error ? reason.message : String(reason);
-      setLibrary((previous) => ({
-        ...previous,
-        messagesByScope: {
-          ...previous.messagesByScope,
-          [effectiveScopeKey]: (previous.messagesByScope[effectiveScopeKey] ?? []).map((item) => (
-            item.id === assistantMessage.id
-              ? { ...item, text: message, pending: false, error: !cancelled }
-              : item
-          )),
-        },
-      }));
-      if (!cancelled) setError(message);
-      cancelRequestedRef.current = false;
-      activeTurnRef.current = null;
-      busyRef.current = false;
-      setBusy(false);
+      conversationRuntime.fail(run, reason);
     }
   };
 
-  const stopAnswer = async (laneName: "main" | "auxiliary" = "main") => {
-    const { activeTurnRef, cancelRequestedRef, busyRef, setError } = laneName === "auxiliary" ? auxiliaryLane : mainLane;
-    if (!busyRef.current || cancelRequestedRef.current) return;
-    cancelRequestedRef.current = true;
-    setError(null);
-    const active = activeTurnRef.current;
-    if (!active?.turnId) return;
-    try {
-      await window.paperOcean.codex.interrupt({ threadId: active.threadId, turnId: active.turnId });
-    } catch (reason) {
-      // A failed interruption must leave this same turn retryable. A delayed
-      // failure from an older turn must not change the next turn's state.
-      if (activeTurnRef.current !== active) return;
-      cancelRequestedRef.current = false;
-      setError(`停止失败，请重试。${reason instanceof Error ? reason.message : String(reason)}`);
-    }
-  };
+  const stopAnswer = (laneName: "main" | "auxiliary" = "main") => conversationRuntime.stop(laneName);
 
   const createConversation = (paperIds = activeConversation?.paperIds.length ? activeConversation.paperIds : openRecords.map((paper) => paper.id)) => {
     if (!paperIds.length || busy) return;
@@ -943,7 +731,7 @@ export default function App() {
     const record = library.papers.find((paper) => paper.id === paperId);
     if (!record || position.page < 1 || (record.pageCount && position.page > record.pageCount)) {
       setError("这条引用对应的论文或页码不在资料库中，请核对原文。");
-      return;
+      return false;
     }
     try {
       if (!openedPapers[paperId]) {
@@ -959,7 +747,8 @@ export default function App() {
       setSelection(null);
       setDestination({ paperId, position, requestId: Date.now() });
       setLibrary((previous) => ({ ...previous, lastPaperId: paperId, openPaperIds: previous.openPaperIds.includes(paperId) ? previous.openPaperIds : [...previous.openPaperIds, paperId] }));
-    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+      return true;
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); return false; }
   };
 
   const openEvidence = (paperId: string, page: number) => {
@@ -979,27 +768,49 @@ export default function App() {
   };
 
   const selectionAnchor: EvidenceAnchor | undefined = selection ? { id: selection.id, paperId: selection.paperId, page: selection.page, quote: selection.text, rects: selection.rects } : undefined;
-  const showNotes = () => { setSidePanel("notes"); setDiscussionRequest((value) => value + 1); };
-  const createNote = (body = "", anchors: EvidenceAnchor[] = [], sourceMessage?: ResearchNote["sourceMessage"]) => {
+  const showNotes = workspace.showNotes;
+  const attachSelection = (lane: "main" | "auxiliary") => {
+    if (!selectionAnchor) return;
+    let scopeKey = lane === "auxiliary" ? auxiliaryScopeKey : effectiveScopeKey;
+    if (lane === "main" && !activeConversation?.paperIds.includes(selectionAnchor.paperId)) {
+      scopeKey = preferredPaperConversation(selectionAnchor.paperId);
+      setChatScopeKey(scopeKey);
+    }
+    if (!scopeKey) return;
+    setLibrary(previous => ({ ...previous, draftAttachmentsByScope: { ...previous.draftAttachmentsByScope, [scopeKey]: selectionAnchor } }));
+    if (lane === "main") workspace.showDiscussion();
+    else setAuxiliaryExpanded(true);
+    setComposerFocus(previous => ({ ...previous, [lane]: previous[lane] + 1 }));
+    setSelection(null);
+  };
+  const returnToRunning = (lane: "main" | "auxiliary") => {
+    if (lane === "main") { setChatScopeKey(busyScope); workspace.showDiscussion(); }
+    else { const id = auxiliaryBusyScope.slice("auxiliary:".length); if (openedPapers[id]) { setActivePaperId(id); setCurrentPage(openedPapers[id].lastPage ?? 1); } else void reopenLibraryPaper(id); setAuxiliaryExpanded(true); }
+    setComposerFocus(previous => ({ ...previous, [lane]: previous[lane] + 1 }));
+  };
+  const createNote = (body = "", anchors: EvidenceAnchor[] = [], sourceMessage?: ResearchNote["sourceMessage"], reveal = true) => {
     const now = Date.now();
     const note: ResearchNote = { id: crypto.randomUUID(), title: sourceMessage ? "回答笔记" : "", body, anchors, sourceMessage, createdAt: now, updatedAt: now };
     setLibrary((previous) => ({ ...previous, notes: [note, ...previous.notes ?? []] }));
-    setSelectedNoteId(note.id);
-    showNotes();
+    if (reveal) { setSelectedNoteId(note.id); showNotes(); }
+    return note;
   };
   const saveHighlight = () => {
     if (!selectionAnchor) return;
     setLibrary((previous) => ({ ...previous, highlights: previous.highlights?.some((item) => item.id === selectionAnchor.id) ? previous.highlights : [...previous.highlights ?? [], { ...selectionAnchor, color: "yellow", createdAt: Date.now() }] }));
   };
-  const saveAnswerNote = (message: ChatMessage) => {
+  const saveAnswerNote = (message: ChatMessage, scopeKey = effectiveScopeKey) => {
     const anchors: EvidenceAnchor[] = [];
     const append = (paperId: string, page: number) => {
       const record = library.papers.find((paper) => paper.id === paperId);
-      if (!record || !activeConversation?.paperIds.includes(paperId) || page < 1 || !record.pageCount || page > record.pageCount || anchors.some((item) => item.paperId === paperId && item.page === page)) return;
+      if (!record || !conversations[scopeKey]?.paperIds.includes(paperId) || page < 1 || !record.pageCount || page > record.pageCount || anchors.some((item) => item.paperId === paperId && item.page === page)) return;
       anchors.push({ id: crypto.randomUUID(), paperId, page, quote: "", rects: [] });
     };
     for (const match of message.text.matchAll(/\]\(#paper=([a-f0-9]{24})&page=([1-9]\d{0,3})\)/g)) append(match[1], Number(match[2]));
-    createNote(message.text, anchors, { scopeKey: effectiveScopeKey, messageId: message.id });
+    const note = createNote(message.text, anchors, { scopeKey, messageId: message.id }, false);
+    setSavedNote({ note, status: "saving" });
+    void flushLibrary().then(() => setSavedNote(previous => previous?.note.id === note.id ? { note, status: "saved" } : previous))
+      .catch(() => setSavedNote(previous => previous?.note.id === note.id ? { note, status: "error" } : previous));
   };
   const openNoteAnchor = (anchor: EvidenceAnchor) => {
     void visitEvidence(anchor.paperId, { page: anchor.page, y: anchor.rects[0]?.y ?? 0, x: 0.5, zoom: activeRecord?.readingPosition?.zoom ?? 1.15, fitWidth: activeRecord?.readingPosition?.fitWidth ?? true });
@@ -1042,8 +853,8 @@ export default function App() {
   };
 
   return (
-    <main className="app-shell">
-      {showLibrary && <LibraryPanel papers={library.papers} opening={opening} onClose={() => setShowLibrary(false)} onOpen={reopenLibraryPaper} onStatus={(id, readingStatus) => updatePaper(id, { readingStatus })} onRelink={async (record) => {
+    <main className="app-shell app-shell--workspace">
+      {workspace.libraryOpen && <LibraryPanel papers={library.papers} opening={opening} onClose={workspace.closeLibrary} onOpen={reopenLibraryPaper} onStatus={(id, readingStatus) => updatePaper(id, { readingStatus })} onRelink={async (record) => {
         const opened = await window.paperOcean.openPdf(record.id);
         if (!opened) return false;
         if (opened.id !== record.id) throw new Error("所选 PDF 与原论文内容不一致，未变更已有记录。");
@@ -1053,91 +864,26 @@ export default function App() {
         await flushLibrary();
         return true;
       }} />}
-      <header className="app-header">
-        <div className="brand">
-          <img className="brand-mark" src={paperOceanMark} alt="" aria-hidden="true" />
-          <div>
-            <strong>Paper Ocean</strong>
-            <span>RESEARCH WORKSPACE</span>
-          </div>
-        </div>
-
-        <PaperSearch papers={library.papers} disabled={opening || download.busy || !libraryReady || loadingLibrary} onOpenArxiv={openArxiv} onOpenLocal={reopenLibraryPaper} onError={setError} />
-
-        <div className="header-actions">
-          <button type="button" className="settings-button" aria-label="打开资料库" onClick={() => setShowLibrary(true)} disabled={!libraryReady}><Library size={17} aria-hidden="true" /></button>
-          <button type="button" className="settings-button settings-button--text" onClick={showNotes} disabled={!libraryReady}>笔记</button>
-          <AboutPanel />
-          <AppearanceSettings />
-          <button
-            type="button"
-            className="settings-button theme-toggle"
-            onClick={toggleTheme}
-            aria-label={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
-            title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
-          >
-            {theme === "dark"
-              ? <Sun className="theme-toggle__icon" size={17} aria-hidden="true" />
-              : <Moon className="theme-toggle__icon" size={17} aria-hidden="true" />}
-          </button>
-          {library.papers.some((paper) => !openedPapers[paper.id]) && (
-            <label className="recent-library" title="最近阅读">
-              <Library size={16} aria-hidden="true" />
-              <select
-                aria-label="最近阅读"
-                value=""
-                onChange={(event) => reopenLibraryPaper(event.target.value)}
-              >
-                <option value="" disabled>最近阅读</option>
-                {library.papers.filter((paper) => !openedPapers[paper.id]).slice(0, 20).map((paper) => (
-                  <option value={paper.id} key={paper.id}>{paper.title}</option>
-                ))}
-              </select>
-            </label>
-          )}
-          <button className="open-button" onClick={openLocal} disabled={opening || !libraryReady || loadingLibrary}>
-            <Plus size={17} aria-hidden="true" />
-            {opening ? "正在打开…" : "本地 PDF"}
-          </button>
-          {window.paperOcean.runtime !== "web" && (
-            <button
-              type="button"
-              className="settings-button"
-              onClick={chooseCodexExecutable}
-              disabled={busy}
-              aria-label="定位 Codex CLI"
-              title={busy ? "回答完成后可重新定位 Codex CLI" : "定位 Codex CLI"}
-            >
-              <Settings size={18} aria-hidden="true" />
-            </button>
-          )}
-        </div>
-      </header>
+      <WorkspaceToolbar
+        search={<PaperSearch papers={library.papers} disabled={opening || download.busy || !libraryReady || loadingLibrary} onOpenArxiv={openArxiv} onOpenLocal={reopenLibraryPaper} onError={setError} />}
+        mode={workspace.mode} fontSize={workspace.fontSize} theme={theme} ready={libraryReady && !loadingLibrary} opening={opening}
+        busy={busy || auxiliaryBusy} libraryOpen={workspace.libraryOpen} notesOpen={sidePanel === "notes" && workspace.mode !== "read"}
+        onMode={workspace.setMode} onFontSize={workspace.setFontSize} onTheme={toggleTheme}
+        onLibrary={workspace.toggleLibrary} onNotes={showNotes} onOpen={openLocal} onLocateCodex={chooseCodexExecutable}
+      />
 
       {download.progress && <DownloadStatus progress={download.progress} busy={download.busy} onCancel={() => void download.cancel()} onResume={() => void openArxiv(download.progress!.reference || download.progress!.source)} onDismiss={download.dismiss} />}
 
-      <div className="paper-titlebar">
-        <div className="paper-titlebar__title">
-          <FileText size={15} className="document-icon" aria-hidden="true" />
-          {activeRecord ? (
-            <input
-              value={activeRecord.title}
-              onChange={(event) => updatePaper(activeRecord.id, { title: event.target.value })}
-              aria-label="论文标题"
-            />
-          ) : <span>尚未打开论文</span>}
-        </div>
-        {activeRecord && (
-          <div className="paper-titlebar__meta">
-            {activeRecord.arxivId && <span>arXiv {activeRecord.arxivId}</span>}
-            {activeRecord.pageCount && <span>{activeRecord.pageCount} 页</span>}
-            <span className={activeRecord.paperDir ? "index-ready" : ""}>
-              {activeRecord.paperDir ? "全文索引就绪" : "正在索引全文"}
-            </span>
-          </div>
-        )}
-      </div>
-
+      {savedNote && <div className="note-save-feedback" role="status">
+        <NotebookPen size={17} /><span>{savedNote.status === "saved" ? "回答已存入笔记" : savedNote.status === "saving" ? "正在保存笔记…" : "笔记尚未写入磁盘"}</span>
+        <button type="button" onClick={() => { setSelectedNoteId(savedNote.note.id); showNotes(); setSavedNote(null); }}>查看</button>
+        <button type="button" disabled={savedNote.status === "saving"} onClick={() => {
+          const target = savedNote.note;
+          setLibrary(previous => ({ ...previous, notes: previous.notes?.filter(note => note.id !== target.id || note.updatedAt !== target.updatedAt) }));
+          setSavedNote(null);
+        }}>撤销</button>
+        <button type="button" aria-label="关闭笔记提示" onClick={() => setSavedNote(null)}><X size={14} /></button>
+      </div>}
       {notice && <div className="global-error global-notice" role="status"><span>{notice}</span><button type="button" aria-label="关闭提示" onClick={() => setNotice(null)}><X size={16} /></button></div>}
       {libraryError && (
         <div className="global-error library-error" role="alert">
@@ -1164,21 +910,22 @@ export default function App() {
       )}
 
       <ResizableWorkspace
-        discussionRequest={discussionRequest}
+        mode={workspace.mode} fontSize={workspace.fontSize}
         reader={<>
+          <ReaderPaperHeader paper={activeRecord} onTitle={title => activeRecord && updatePaper(activeRecord.id, { title })} onClose={() => activePaperId && closePaper(activePaperId)} />
           {!!evidenceHistory.length && <button type="button" className="return-to-reading" onClick={() => {
             const target = evidenceHistory.at(-1)!;
-            void visitEvidence(target.paperId, target.position, false);
-            setEvidenceHistory((previous) => previous.slice(0, -1));
+            void visitEvidence(target.paperId, target.position, false).then(ok => { if (ok) setEvidenceHistory(previous => previous.filter(item => item !== target)); });
           }}>← 返回引用前的阅读位置</button>}
-          <PaperTabs
+          {openRecords.length > 1 && <PaperTabs
             papers={openRecords}
             activePaperId={activePaperId}
             onActivate={(paperId) => selectOpenPaper(paperId)}
             onClose={closePaper}
-          />
+          />}
           <div className="reader-body">
             <PdfReader
+              key={activePaperId ?? "empty-reader"}
               ref={readerRef}
               paper={activePaper}
               highlights={(library.highlights ?? []).filter((item) => item.paperId === activePaperId)}
@@ -1205,16 +952,21 @@ export default function App() {
               blocked={auxiliaryBusy && auxiliaryBusyScope !== auxiliaryScopeKey}
               ready={Boolean(account?.connected && modelSelection && activeRecord.paperDir && (!auxiliaryBusy || auxiliaryBusyScope === auxiliaryScopeKey))}
               connected={Boolean(account?.connected)} fast={Boolean(modelSelection?.serviceTier)}
-              error={auxiliaryError} onLogin={login}
+              error={!auxiliaryErrorScope || auxiliaryErrorScope === auxiliaryScopeKey ? auxiliaryError : null} onLogin={login}
+              expanded={auxiliaryExpanded} onExpandedChange={setAuxiliaryExpanded}
+              attachment={attachmentFor(auxiliaryScopeKey)} onRemoveAttachment={() => removeAttachment(auxiliaryScopeKey)}
+              focusRequest={composerFocus.auxiliary} onReturnToRunning={() => returnToRunning("auxiliary")}
+              messageJump={auxiliarySourceJump?.scopeKey === auxiliaryScopeKey ? auxiliarySourceJump : undefined}
+              onSaveNote={message => saveAnswerNote(message, auxiliaryScopeKey)}
               onSend={question => void sendMessage(question, "auxiliary")}
               onStop={() => void stopAnswer("auxiliary")} onOpenEvidence={openEvidence}
             />}
           </div>
-          {selectionAnchor && <div className="selection-actions"><span title={selectionAnchor.quote}>第 {selectionAnchor.page} 页 · {selectionAnchor.quote}</span><button type="button" disabled={library.highlights?.some((item) => item.id === selectionAnchor.id)} onClick={saveHighlight}>保存高亮</button><button type="button" onClick={() => createNote("", [selectionAnchor])}>记笔记</button><button type="button" aria-label="清除选文" onClick={() => setSelection(null)}>×</button></div>}
+          {selectionAnchor && <div className="selection-actions"><span title={selectionAnchor.quote}>第 {selectionAnchor.page} 页 · {selectionAnchor.quote}</span><button type="button" onClick={() => attachSelection("main")}><MessageSquare size={14} />问主对话</button><button type="button" onClick={() => attachSelection("auxiliary")}>问辅助对话</button><button type="button" disabled={library.highlights?.some((item) => item.id === selectionAnchor.id)} onClick={saveHighlight}>保存高亮</button><button type="button" onClick={() => createNote("", [selectionAnchor])}>记笔记</button><button type="button" aria-label="清除选文" onClick={() => setSelection(null)}>×</button></div>}
         </>}
         chat={
           <div className="discussion-notes">
-          <nav className="discussion-notes__tabs" aria-label="讨论与笔记"><button type="button" aria-pressed={sidePanel === "chat"} onClick={() => setSidePanel("chat")}>AI 讨论</button><button type="button" aria-pressed={sidePanel === "notes"} onClick={showNotes}>研究笔记</button></nav>
+          {sidePanel === "notes" && <div className="notes-workspace-header"><button type="button" onClick={workspace.showDiscussion}><ArrowLeft size={16} />返回讨论</button><span>研究笔记</span></div>}
           <div className="discussion-notes__body" hidden={sidePanel !== "chat"}>
           <ChatPanel
             key={`${effectiveScopeKey}:${sourceJump}`}
@@ -1237,11 +989,12 @@ export default function App() {
             onPositionChange={(position) => setLibrary((previous) => ({ ...previous, chatPositions: { ...previous.chatPositions, [effectiveScopeKey]: position } }))}
             onOpenEvidence={openEvidence}
             onSaveNote={saveAnswerNote}
-            selectedText={selectedText}
-            currentPage={currentPage}
+            attachment={attachmentFor(effectiveScopeKey)} onRemoveAttachment={() => removeAttachment(effectiveScopeKey)}
+            focusRequest={composerFocus.main} readingPaperId={activePaperId}
+            onReturnToRunning={() => returnToRunning("main")}
             busy={busy && busyScope === effectiveScopeKey}
             blocked={busy && busyScope !== effectiveScopeKey}
-            error={null}
+            error={!conversationErrorScope || conversationErrorScope === effectiveScopeKey ? conversationError : null}
             modelSelection={modelSelection}
             modelError={modelError}
             onRetryModels={loadModels}
@@ -1249,15 +1002,19 @@ export default function App() {
             onSelectConversation={setChatScopeKey}
             onLogin={login}
             onSend={sendMessage}
-            onStop={stopAnswer}
+            onStop={() => void stopAnswer("main")}
           />
           </div>
           <div className="discussion-notes__body" hidden={sidePanel !== "notes"}>
-            <NotesPanel notes={library.notes ?? []} highlights={library.highlights ?? []} papers={library.papers} selectedId={selectedNoteId} selection={selectionAnchor} onSelect={setSelectedNoteId} onNew={() => createNote()} onChange={(note) => setLibrary((previous) => ({ ...previous, notes: previous.notes?.map((item) => item.id === note.id ? { ...note, updatedAt: Date.now() } : item) }))} onHighlightChange={(highlight) => setLibrary((previous) => ({ ...previous, highlights: previous.highlights?.map((item) => item.id === highlight.id ? highlight : item) }))} onOpenAnchor={openNoteAnchor} onExport={exportNote} onOpenSource={(note) => {
+            <NotesPanel currentPaperId={activePaperId} paperIdsByScope={Object.fromEntries(Object.values(conversations).map(item => [item.id, item.paperIds]))} notes={library.notes ?? []} highlights={library.highlights ?? []} papers={library.papers} selectedId={selectedNoteId} selection={selectionAnchor} onSelect={setSelectedNoteId} onNew={() => createNote()} onChange={(note) => setLibrary((previous) => ({ ...previous, notes: previous.notes?.map((item) => item.id === note.id ? { ...note, updatedAt: Date.now() } : item) }))} onHighlightChange={(highlight) => setLibrary((previous) => ({ ...previous, highlights: previous.highlights?.map((item) => item.id === highlight.id ? highlight : item) }))} onOpenAnchor={openNoteAnchor} onExport={exportNote} onOpenSource={(note) => {
               const source = note.sourceMessage;
               if (!source || !library.messagesByScope[source.scopeKey]?.some((item) => item.id === source.messageId)) { setError("原回答暂时不在资料库中，笔记正文仍保留。"); return; }
               setLibrary((previous) => ({ ...previous, chatPositions: { ...previous.chatPositions, [source.scopeKey]: { messageId: source.messageId, block: 0, offset: 0, followOutput: false } } }));
-              setChatScopeKey(source.scopeKey); setSourceJump((value) => value + 1); setSidePanel("chat");
+              if (source.scopeKey.startsWith("auxiliary:")) {
+                const paperId = source.scopeKey.slice("auxiliary:".length);
+                if (openedPapers[paperId]) selectOpenPaper(paperId); else void reopenLibraryPaper(paperId);
+                setAuxiliaryExpanded(true); setAuxiliarySourceJump({ scopeKey: source.scopeKey, messageId: source.messageId, requestId: Date.now() });
+              } else { setChatScopeKey(source.scopeKey); setSourceJump(value => value + 1); workspace.showDiscussion(); }
             }} />
           </div>
           </div>
