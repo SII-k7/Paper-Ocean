@@ -14,6 +14,7 @@ const application=await electron.launch({executablePath:electronPath,args:[path.
 try {
  const page=await application.firstWindow();page.on('dialog',dialog=>dialog.accept().catch(()=>undefined));const errors=[];page.on('pageerror',error=>errors.push(error.message));
  await application.evaluate(()=>globalThis.setupAuxTest());await page.reload();
+ assert.equal(await page.locator('.chat-topbar__label').innerText(),'论文对话');
  await application.evaluate(({dialog},pdf)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[pdf]});},pdf);
  await page.getByRole('button',{name:'本地 PDF',exact:true}).click();
  await page.waitForFunction(()=>document.querySelector('.paper-titlebar')?.textContent.includes('全文索引就绪'));
@@ -33,9 +34,14 @@ try {
  assert.ok(!(await page.locator('.chat-panel').innerText()).includes('辅助窗口独立回答'));
  await aux.locator('.auxiliary-chat__toggle').click();await emit(secondary,'折叠时继续。');
  await aux.getByText('正在回答…',{exact:true}).waitFor();await aux.locator('.auxiliary-chat__toggle').click();
+ await application.evaluate(()=>{globalThis.interruptFailuresRemaining=1;});
+ await aux.getByLabel('停止辅助回答').click();
+ await aux.getByText(/停止失败，请重试/).waitFor();
+ assert.ok(await aux.getByLabel('停止辅助回答').isVisible());
  await aux.getByLabel('停止辅助回答').click();
  await page.waitForFunction(()=>!document.querySelector('button[aria-label="停止辅助回答"]'));
  assert.equal((await application.evaluate(()=>globalThis.interrupts))[0].threadId,secondary.threadId);
+ assert.equal((await application.evaluate(()=>globalThis.interrupts))[1].threadId,secondary.threadId);
  await emit(main,'辅助停止后主窗口仍在输出。');
  await application.evaluate((_unused,r)=>globalThis.emitAux('turn/completed',{threadId:r.threadId,turn:{id:r.turnId,status:'completed'}}),main);
  await page.waitForFunction(()=>!document.querySelector('.send-button--stop'));
@@ -48,11 +54,37 @@ try {
  await aux.getByLabel('发送辅助问题').click();await page.waitForTimeout(1500);
  assert.equal((await application.evaluate(()=>globalThis.requests)).at(-1).threadId,secondary.threadId);
  await aux.getByLabel('停止辅助回答').click();
+ await page.waitForFunction(()=>!document.querySelector('button[aria-label="停止辅助回答"]'));
+ const mainScope=await page.getByLabel('选择讨论',{exact:true}).inputValue();
+ await page.getByLabel('向 Codex 提问',{exact:true}).fill('MAIN_SWITCH_SENTINEL');
+ await page.getByLabel('发送问题',{exact:true}).click();
+ await page.waitForFunction(()=>document.querySelector('.chat-topbar__label')?.textContent==='等待模型响应');
+ const switchingMain=(await application.evaluate(()=>globalThis.requests)).find(request=>request.prompt.includes('MAIN_SWITCH_SENTINEL'));
+ assert.ok(switchingMain);
  
  await fs.writeFile(path.resolve('output/playwright/auxiliary-chat/second.pdf'),(await fs.readFile(pdf,'utf8')).replaceAll('control','walking'));
  await application.evaluate(({dialog},pdf)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[pdf]});},path.resolve('output/playwright/auxiliary-chat/second.pdf'));
  await page.getByRole('button',{name:'本地 PDF',exact:true}).click();
  await page.waitForFunction(()=>document.querySelectorAll('.paper-tab').length===2);
+ await page.getByText('另一讨论正在回答。完成后可在这里提问，或切回原讨论停止回答。',{exact:true}).waitFor();
+ assert.equal(await page.locator('.chat-panel').getByLabel('停止回答',{exact:true}).count(),0);
+ const requestsBeforeDraft=(await application.evaluate(()=>globalThis.requests)).length;
+ await page.getByLabel('向 Codex 提问',{exact:true}).fill('第二篇论文草稿');
+ assert.ok(await page.getByLabel('发送问题',{exact:true}).isDisabled());
+ await page.getByLabel('向 Codex 提问',{exact:true}).press('Enter');
+ assert.equal((await application.evaluate(()=>globalThis.requests)).length,requestsBeforeDraft);
+ await emit(switchingMain,'切换论文期间仍保存到原讨论。');
+ assert.ok(!(await page.locator('.chat-panel').innerText()).includes('切换论文期间仍保存到原讨论。'));
+ await page.getByLabel('选择讨论',{exact:true}).selectOption(mainScope);
+ await page.locator('.chat-panel').getByText('切换论文期间仍保存到原讨论。',{exact:true}).waitFor();
+ await application.evaluate(()=>{globalThis.interruptFailuresRemaining=1;});
+ await page.getByLabel('停止回答',{exact:true}).click();
+ await page.waitForFunction(()=>document.body.innerText.includes('停止失败，请重试'));
+ assert.ok(await page.getByLabel('停止回答',{exact:true}).isVisible());
+ await page.getByLabel('停止回答',{exact:true}).click();
+ await page.waitForFunction(()=>!document.querySelector('.send-button--stop'));
+ assert.equal(await page.locator('.chat-topbar__label').innerText(),'论文对话');
+ assert.ok((await application.evaluate(()=>globalThis.interrupts)).slice(-2).every(input=>input.threadId===switchingMain.threadId));
  assert.equal(await aux.getByLabel('辅助对话问题').inputValue(),'');
  assert.ok(!(await aux.innerText()).includes('辅助窗口独立回答'));
  await application.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(1024,768));
@@ -61,10 +93,10 @@ try {
  const rect=await aux.boundingBox();const reader=await page.locator('.reader-body').boundingBox();
  assert.ok(rect.x>=reader.x&&rect.x+rect.width<=reader.x+reader.width+1);
  assert.ok(rect.y>=reader.y&&rect.y+rect.height<=reader.y+reader.height+1);
- await aux.locator('.auxiliary-chat__toggle').click();await page.screenshot({path:'output/playwright/auxiliary-chat/collapsed.png'});
+ await aux.locator('.auxiliary-chat__toggle').click();
+ await page.waitForFunction(()=>document.querySelector('.auxiliary-chat')?.getBoundingClientRect().height<55);
+ await page.screenshot({path:'output/playwright/auxiliary-chat/collapsed.png'});
  assert.ok((await aux.boundingBox()).height<55);
- assert.deepEqual(errors,[]);console.log('PASS: simultaneous sends, unique threads/context, interleaved output isolation, collapse continues, independent interrupt, saved histories/draft and resume');
+ assert.deepEqual(errors,[]);console.log('PASS: simultaneous sends, unique threads/context, interleaved output isolation, collapse continues, independent interrupt, failed-stop retries in both lanes, switched-discussion busy state and output isolation, idle status, saved histories/draft and resume');
 }finally{await application.close();}
-
-
 

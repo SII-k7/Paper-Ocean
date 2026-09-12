@@ -4,6 +4,7 @@ import App from "./App";
 import { installBrowserBridge } from "./browser-bridge";
 import { installBrowserDemoBridge } from "./demo-bridge";
 import "./styles.css";
+import "./glass.css";
 
 if (!window.paperOcean) {
   if (import.meta.env.VITE_PAPER_OCEAN_MODE === "demo") installBrowserDemoBridge();

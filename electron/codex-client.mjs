@@ -6,6 +6,7 @@ import readline from "node:readline";
 import { spawn } from "node:child_process";
 import { PAPER_READING_BASE_INSTRUCTIONS } from "./paper-prompt.mjs";
 import { READING_MODEL, fixedReadingSelection } from "./reading-model.mjs";
+import { READING_SESSION_OVERRIDES, readingSessionConfig } from "./reading-session.mjs";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const LOGIN_START_TIMEOUT_MS = 10_000;
@@ -24,6 +25,7 @@ export function codexAppServerArgs() {
     `model_provider="${PAPER_OCEAN_PROVIDER}"`,
     "-c",
     `model_providers.${PAPER_OCEAN_PROVIDER}={name="Paper Ocean HTTP",wire_api="responses",requires_openai_auth=true,supports_websockets=false}`,
+    ...Object.entries(READING_SESSION_OVERRIDES).flatMap(([key, value]) => ["-c", `${key}=${value}`]),
     "app-server",
   ];
 }
@@ -355,10 +357,28 @@ export class CodexClient extends EventEmitter {
     return selection;
   }
 
+  async readingConfig(contextDir) {
+    const [configuration, skills] = await Promise.allSettled([
+      this.request("config/read", { includeLayers: false, cwd: contextDir }, 5_000),
+      this.request("skills/list", { cwds: [contextDir], forceReload: false }, 5_000),
+    ]);
+    // Older app-servers may not expose one of these read-only discovery methods.
+    // Keep the process-level isolation and allow the paper question to proceed.
+    if (configuration.status === "rejected" || skills.status === "rejected") {
+      this.emit("diagnostic", { level: "warning", message: "当前 Codex 未能读取全部扩展列表；论文会话继续使用基础精简配置。" });
+    }
+    return readingSessionConfig(
+      configuration.status === "fulfilled" ? configuration.value?.config ?? {} : {},
+      skills.status === "fulfilled" ? skills.value?.data ?? [] : [],
+    );
+  }
+
   async startThread({ contextDir, title, model, serviceTier }) {
     await this.start();
     const selection = await this.#validatedSelection({ model });
+    const config = await this.readingConfig(contextDir);
     const result = await this.request("thread/start", {
+      config,
       model: selection.model,
       modelProvider: PAPER_OCEAN_PROVIDER,
       serviceTier: serviceTier === null ? null : selection.serviceTier ?? null,
@@ -380,7 +400,9 @@ export class CodexClient extends EventEmitter {
   async resumeThread({ threadId, contextDir }) {
     await this.start();
     if (this.loadedThreads.get(threadId) === path.resolve(contextDir)) return threadId;
+    const config = await this.readingConfig(contextDir);
     const result = await this.request("thread/resume", {
+      config,
       threadId,
       modelProvider: PAPER_OCEAN_PROVIDER,
       cwd: contextDir,

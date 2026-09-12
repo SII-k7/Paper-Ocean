@@ -11,6 +11,7 @@ import {
   splitAdditionalContextValue,
   codexSpawnEnvironment,
 } from "../electron/codex-client.mjs";
+import { READING_SESSION_OVERRIDES, readingSessionConfig } from "../electron/reading-session.mjs";
 
 test("Linux desktop discovers user-local Codex and adds its directory to the child PATH", async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "codex-linux-"));
@@ -29,6 +30,10 @@ test("Paper Ocean starts Codex app-server on the stable HTTP streaming transport
     'model_provider="paper_ocean_http"',
     "-c",
     'model_providers.paper_ocean_http={name="Paper Ocean HTTP",wire_api="responses",requires_openai_auth=true,supports_websockets=false}',
+    "-c", "features.plugins=false",
+    "-c", "features.apps=false",
+    "-c", "memories.use_memories=false",
+    "-c", "memories.generate_memories=false",
     "app-server",
   ]);
 });
@@ -37,6 +42,7 @@ test("new and persisted threads explicitly select HTTP, including threads saved 
   const { CodexClient } = await import("../electron/codex-client.mjs");
   const client = new CodexClient(), calls = [];
   client.start = async () => {};
+  client.readingConfig = async () => readingSessionConfig();
   client.models = async () => [{id:"gpt-5.6-luna",supportedEfforts:["max"]}];
   client.request = async (method, params) => {
     calls.push({method, params});
@@ -49,6 +55,7 @@ test("new and persisted threads explicitly select HTTP, including threads saved 
     assert.equal(params.modelProvider, PAPER_OCEAN_PROVIDER);
     assert.equal(params.sandbox, "read-only");
     assert.equal(params.approvalPolicy, "never");
+    for (const [key, value] of Object.entries(READING_SESSION_OVERRIDES)) assert.equal(params.config[key], value);
   }
   assert.equal(calls[1].params.threadId,"existing-openai-thread");
 });
@@ -75,6 +82,7 @@ test("reading requests override legacy settings with Luna max", async () => {
   const {CodexClient} = await import("../electron/codex-client.mjs");
   const client = new CodexClient(), calls=[];
   client.start = async () => {};
+  client.readingConfig = async () => readingSessionConfig();
   client.models = async () => [{id:"gpt-5.6-luna",supportedEfforts:["max","high"],defaultEffort:"high"}];
   client.request = async (method,params) => { calls.push({method,params}); return {thread:{id:"test-thread"},turn:{id:"test-turn"}}; };
   await client.startThread({contextDir:".",title:"Fixture",model:"gpt-6-astra"});
@@ -105,6 +113,7 @@ test("Fast uses catalog tier ID, standard explicitly resets it, unavailable Fast
   const { CodexClient } = await import("../electron/codex-client.mjs");
   const client = new CodexClient(), calls = [];
   client.start = async () => {};
+  client.readingConfig = async () => readingSessionConfig();
   client.models = async () => normalizeModelCatalog({ data: [{ id: "gpt-5.6-luna", supportedReasoningEfforts: ["max"], serviceTiers: [{ id: "priority", name: "Fast" }] }] });
   client.request = async (method, params) => { calls.push(params); return { thread: { id: "t" }, turn: { id: "turn" } }; };
   await client.startThread({ contextDir: ".", title: "Fast" });
@@ -121,6 +130,7 @@ test("warm threads skip resume; changed context, failed resume and stopped serve
   const { CodexClient } = await import("../electron/codex-client.mjs");
   const client = new CodexClient(), calls = [];
   client.start = async () => {};
+  client.readingConfig = async () => readingSessionConfig();
   client.models = async () => [{ id: "gpt-5.6-luna", supportedEfforts: ["max"] }];
   client.request = async (method) => { calls.push(method); return { thread: { id: "t" } }; };
   await client.startThread({ contextDir: ".", title: "Fixture" });

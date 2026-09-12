@@ -213,7 +213,7 @@ export type CodexEvent = {
   params?: Record<string, unknown>;
 };
 
-export type PaperSuggestion = { key: string; title: string; subtitle: string; source: "local" | "arxiv" | "semantic-scholar"; paperId?: string; arxivId?: string; semanticId?: string };
+export type PaperSuggestion = { key: string; title: string; subtitle: string; source: "local" | "arxiv" | "semantic-scholar" | "openalex"; paperId?: string; arxivId?: string; semanticId?: string; openAlexId?: string };
 export type PaperSearchResult = { items: PaperSuggestion[]; error?: string };
 export type PaperCategory = "运动控制" | "动作生成" | "VLA" | "世界模型" | "待分类";
 export type PaperArchiveStatus = {

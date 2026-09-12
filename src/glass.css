@@ -1,0 +1,86 @@
+/* Glass belongs to the controls above the document; PDF pages and answers stay crisp. */
+:root {
+  --glass-fill: rgba(24, 33, 42, .93);
+  --glass-floating: rgba(23, 31, 40, .96);
+  --glass-edge: rgba(203, 230, 239, .23);
+  --glass-light: rgba(226, 251, 255, .13);
+  --glass-shade: 0 12px 36px rgba(0, 0, 0, .24);
+  --fluid-ease: cubic-bezier(.22, .85, .2, 1);
+}
+:root[data-theme="light"] {
+  --glass-fill: rgba(248, 252, 251, .82);
+  --glass-floating: rgba(252, 254, 252, .95);
+  --glass-edge: rgba(255, 255, 255, .9);
+  --glass-light: rgba(255, 255, 255, .7);
+  --glass-shade: 0 12px 34px rgba(34, 65, 56, .14);
+}
+.appearance-settings { position: relative; -webkit-app-region: no-drag; }
+.appearance-settings > summary { list-style: none; cursor: pointer; }
+.appearance-settings > summary::-webkit-details-marker { display: none; }
+.appearance-settings[open] > summary { color: var(--accent); background: var(--accent-soft); }
+.appearance-settings__panel { position: absolute; right: 0; top: calc(100% + 12px); z-index: 130; width: 280px; padding: 18px; border: 1px solid var(--line); border-radius: 20px; background: var(--panel); box-shadow: var(--shadow-popover); }
+.appearance-settings__panel > strong { font-size: 14px; }
+.appearance-settings__panel label { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 16px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.appearance-settings__panel small { display: block; color: var(--muted); font-size: 11px; margin-top: 5px; }
+.appearance-settings__panel p { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 12px 0 0; }
+.appearance-settings__panel input { appearance: none; position: relative; margin: 0; width: 36px; height: 22px; flex-shrink: 0; cursor: pointer; border: 1px solid var(--line); border-radius: 20px; background: var(--panel-raised); transition: background-color 160ms ease; }
+.appearance-settings__panel input::before { content: ""; display: block; width: 16px; height: 16px; margin: 2px; background: var(--muted); border-radius: 50%; transition: transform 180ms var(--fluid-ease); }
+.appearance-settings__panel input:checked { background: var(--accent); border-color: transparent; }
+.appearance-settings__panel input:checked::before { background: white; transform: translateX(14px); }
+.appearance-settings__panel input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+:root[data-material="glass"] :is(.page-controls, .zoom-controls, .auxiliary-chat, .appearance-settings__panel, .paper-search-popover, .new-answer-button, .download-status) {
+  background: linear-gradient(135deg, var(--glass-light), transparent 52%), var(--glass-fill);
+  border: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--glass-light), inset 0 -1px 0 rgba(66, 107, 95, .1), var(--glass-shade);
+  backdrop-filter: blur(22px) saturate(145%);
+}
+:root[data-material="glass"] :is(.library-dialog, .about-panel) {
+  border: 1px solid var(--glass-edge);
+  border-radius: 24px;
+  background: linear-gradient(140deg, var(--glass-light), transparent 42%), var(--glass-floating);
+  box-shadow: inset 0 1px 0 var(--glass-light), 0 26px 80px #0004;
+  backdrop-filter: blur(24px) saturate(130%);
+}
+:root[data-material="glass"] .app-header { background: var(--glass-floating); border-bottom-color: var(--line-soft); backdrop-filter: none; }
+:root[data-material="glass"] .appearance-settings__panel { background: linear-gradient(135deg, var(--glass-light), transparent 52%), var(--glass-floating); }
+:root[data-material="glass"] :is(.layout-switch, .discussion-notes__tabs) { border-radius: 14px; background: var(--glass-fill); box-shadow: inset 0 1px 0 var(--glass-light); }
+:root[data-material="glass"] .layout-switch__indicator { border-radius: 11px; border-color: var(--glass-edge); box-shadow: inset 0 1px 0 var(--glass-light), 0 2px 6px #0001; }
+:root[data-material="glass"] :is(.page-controls, .zoom-controls) { border-radius: 24px; }
+:root[data-material="glass"] .auxiliary-chat { border-radius: 22px; }
+:root[data-material="glass"] .auxiliary-chat__toggle { background: transparent; }
+:root[data-material="glass"] .auxiliary-chat__scope { background: transparent; }
+:root[data-material="glass"] .auxiliary-chat__composer { background: transparent; }
+:root[data-material="glass"] .auxiliary-chat__composer textarea { background: var(--glass-floating); border-radius: 12px; }
+:root[data-material="glass"] .auxiliary-message--user { background: var(--accent-soft); }
+:root[data-material="glass"] .paper-search-popover { border-radius: 20px; background-color: var(--glass-floating); }
+:root[data-material="glass"] :is(.arxiv-bar, .chat-composer) { border-radius: 18px; box-shadow: inset 0 1px 0 var(--glass-light), 0 4px 18px #0001; }
+:root[data-material="glass"] .chat-composer { border-radius: 24px; }
+.auxiliary-chat { height: 42px; display: flex; flex-direction: column; transition: height 280ms var(--fluid-ease), border-radius 280ms var(--fluid-ease), box-shadow 180ms ease; }
+.auxiliary-chat--expanded { height: min(360px, calc(100% - 68px)); }
+.auxiliary-chat__toggle { flex-shrink: 0; }
+.auxiliary-chat[data-unread="true"] .auxiliary-chat__toggle > span,
+.auxiliary-chat[data-busy="true"] .auxiliary-chat__toggle > span { color: var(--accent); }
+.appearance-settings[open] .appearance-settings__panel,
+.auxiliary-chat--expanded .auxiliary-chat__body { animation: glass-reveal 240ms var(--fluid-ease) both; }
+:root[data-material="glass"] :is(.paper-search-popover, .library-dialog[open], .about-panel[open]) { animation: glass-reveal 240ms var(--fluid-ease) both; }
+@keyframes glass-reveal { from { opacity: 0; filter: blur(3px); transform: translateY(7px) scale(.985); } to { opacity: 1; filter: none; transform: none; } }
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  :root[data-motion="full"] :is(.settings-button, .open-button):hover:not(:disabled) { transform: translateY(-1px); }
+  :root[data-material="glass"] :is(.page-controls, .zoom-controls, .auxiliary-chat):hover { box-shadow: inset 0 1px 0 var(--glass-light), 0 12px 32px #0002; }
+}
+/* Opt-outs apply to the entire UI, including older motion and modal backdrops. */
+:root[data-motion="reduced"] *, :root[data-motion="reduced"] *::before, :root[data-motion="reduced"] *::after, :root[data-motion="reduced"] *::backdrop {
+  animation: none !important; transition: none !important; scroll-behavior: auto !important;
+}
+:root[data-motion="reduced"] button:active { transform: none; }
+:root[data-material="solid"] *, :root[data-material="solid"] *::backdrop { backdrop-filter: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after, *::backdrop { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  button:active { transform: none !important; }
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
+  :root[data-material] :is(.app-header, .page-controls, .zoom-controls, .auxiliary-chat, .appearance-settings__panel, .paper-search-popover, .library-dialog, .about-panel) {
+    background: var(--panel); border: 1px solid var(--text); backdrop-filter: none;
+  }
+}

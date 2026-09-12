@@ -30,15 +30,19 @@ export default function AuxiliaryChat({ paper, scopeKey, messages, draft, onDraf
   const followRef = useRef(true);
   const composingRef = useRef(false);
   const [unread, setUnread] = useState(false);
+  const seenContent = useRef(new Map<string, string>());
   const latest = messages.at(-1);
+  const contentKey = latest?.role === "assistant" && latest.text ? `${latest.id}:${latest.text.length}` : "";
   useEffect(() => {
     followRef.current = true;
     setUnread(false);
+    if (!seenContent.current.has(scopeKey)) seenContent.current.set(scopeKey, contentKey);
   }, [scopeKey]);
   useEffect(() => {
     if (expanded && followRef.current && scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    if (!expanded && latest?.role === "assistant" && latest.text) setUnread(true);
-  }, [latest?.text, latest?.pending, expanded, scopeKey]);
+    if (expanded) seenContent.current.set(scopeKey, contentKey);
+    setUnread(!expanded && Boolean(contentKey) && seenContent.current.get(scopeKey) !== contentKey);
+  }, [contentKey, expanded, scopeKey]);
   const toggle = () => {
     const next = !expanded;
     setExpanded(next);
@@ -46,7 +50,7 @@ export default function AuxiliaryChat({ paper, scopeKey, messages, draft, onDraf
     try { localStorage.setItem("paper-ocean-auxiliary-expanded", String(next)); } catch { /* Session-only preference is sufficient. */ }
   };
   const send = () => { if (ready && !busy && draft.trim()) onSend(draft.trim()); };
-  return <section className={`auxiliary-chat${expanded ? " auxiliary-chat--expanded" : ""}`} aria-label="论文辅助对话">
+  return <section className={`auxiliary-chat${expanded ? " auxiliary-chat--expanded" : ""}`} data-busy={busy} data-unread={unread} aria-label="论文辅助对话">
     <button className="auxiliary-chat__toggle" type="button" aria-expanded={expanded} aria-controls="auxiliary-chat-body" onClick={toggle}>
       <MessageCircle size={16} />
       <strong>辅助对话</strong>

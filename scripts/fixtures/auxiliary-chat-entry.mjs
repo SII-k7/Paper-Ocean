@@ -8,7 +8,7 @@ app.disableHardwareAcceleration();app.setPath('userData',root);app.setPath('sess
 process.env.PAPER_OCEAN_ARCHIVE_DIR=root+'/archive';
 await import('../../electron/main.mjs');
 globalThis.setupAuxTest=()=>{
- let next=0;globalThis.requests=[];globalThis.interrupts=[];
+ let next=0;globalThis.requests=[];globalThis.interrupts=[];globalThis.interruptFailuresRemaining=0;
  const emit=(method,params)=>BrowserWindow.getAllWindows().forEach(w=>w.webContents.send('codex:event',{method,params}));globalThis.emitAux=emit;
  const handlers={
  'codex:status':()=>({connected:true,accountType:'chatgpt',planType:'pro'}),
@@ -17,7 +17,7 @@ globalThis.setupAuxTest=()=>{
  'codex:start-thread':()=> 'fixture-thread-'+(++next),
  'codex:resume-thread':(_event,input)=>input.threadId,
  'codex:send-turn':(_event,input)=>{const turnId='fixture-turn-'+(++next);globalThis.requests.push({...input,turnId});return {turnId,serviceTier:input.serviceTier};},
- 'codex:interrupt':(_event,input)=>{globalThis.interrupts.push(input);emit('turn/completed',{threadId:input.threadId,turn:{id:input.turnId,status:'interrupted'}});},
+ 'codex:interrupt':(_event,input)=>{globalThis.interrupts.push(input);if(globalThis.interruptFailuresRemaining>0){globalThis.interruptFailuresRemaining--;throw new Error('Temporary interruption failure');}emit('turn/completed',{threadId:input.threadId,turn:{id:input.turnId,status:'interrupted'}});},
  };
  for(const [channel,handler] of Object.entries(handlers)){ipcMain.removeHandler(channel);ipcMain.handle(channel,handler);}
 };

@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Command, LoaderCircle, Search, X } from "lucide-react";
 import { parseArxivReference } from "../../electron/paper-metadata.mjs";
-import { localPaperSuggestions } from "../../electron/paper-search-utils.mjs";
+import { localPaperSuggestions, searchText, titleMatchScore } from "../../electron/paper-search-utils.mjs";
 import type { PaperRecord, PaperSuggestion } from "../types";
 
 type Props = { papers: PaperRecord[]; disabled: boolean; onOpenArxiv(value: string): Promise<boolean>; onOpenLocal(id: string): Promise<boolean>; onError(message: string): void };
@@ -9,6 +9,7 @@ export default function PaperSearch({ papers, disabled, onOpenArxiv, onOpenLocal
   const [query, setQuery] = useState(""), [show, setShow] = useState(false), [active, setActive] = useState(-1);
   const [remote, setRemote] = useState<{ query: string; items: PaperSuggestion[]; error?: string }>({ query: "", items: [] });
   const [pending, setPending] = useState(false), [opening, setOpening] = useState(false), [composing, setComposing] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const composingRef = useRef(false), root = useRef<HTMLDivElement>(null), request = useRef(0), id = useId();
   const suppressSubmit = useRef(false);
   const input = useRef<HTMLInputElement>(null);
@@ -22,7 +23,9 @@ export default function PaperSearch({ papers, disabled, onOpenArxiv, onOpenLocal
   }, [disabled, opening]);
   const trimmed = query.trim(), direct = parseArxivReference(trimmed);
   const local = useMemo(() => localPaperSuggestions(query, papers), [query, papers]);
-  const items = useMemo(() => [...local, ...(remote.query === trimmed ? remote.items.filter(item => !local.some(localItem => localItem.arxivId && localItem.arxivId.replace(/v\d+$/, "") === item.arxivId?.replace(/v\d+$/, ""))) : [])].slice(0, 10), [local, remote, trimmed]);
+  const items = useMemo(() => [...local, ...remote.items.filter(item => titleMatchScore(trimmed, item.title) > 0
+    && !local.some(localItem => searchText(localItem.title) === searchText(item.title)
+      || (localItem.arxivId && localItem.arxivId.replace(/v\d+$/, "") === item.arxivId?.replace(/v\d+$/, ""))))].slice(0, 10), [local, remote, trimmed]);
   const expanded = show && !direct && Boolean(trimmed);
   useEffect(() => {
     const current = ++request.current;
@@ -34,19 +37,20 @@ export default function PaperSearch({ papers, disabled, onOpenArxiv, onOpenLocal
         if (current === request.current) setRemote({ query: trimmed, ...result });
       }).catch(() => { if (current === request.current) setRemote({ query: trimmed, items: [], error: "在线联想暂不可用，本地匹配仍可使用" }); })
         .finally(() => { if (current === request.current) setPending(false); });
-    }, 450);
+    }, 300);
     return () => { clearTimeout(timer); request.current++; };
-  }, [trimmed, composing, show, disabled]);
+  }, [trimmed, composing, show, disabled, attempt]);
   useEffect(() => { root.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" }); }, [active]);
   async function choose(item?: PaperSuggestion) {
     if (opening || disabled) return;
-    if (!item && !direct) { setShow(true); return; }
+    if (!item && !direct) item = items[0];
+    if (!item && !direct) { setShow(true); setAttempt(value => value + 1); return; }
     setOpening(true); setShow(false);
     try {
       if (item?.paperId) { if (await onOpenLocal(item.paperId)) setQuery(""); return; }
       let reference = item?.arxivId || direct?.reference;
-      if (!reference && item?.semanticId) {
-        const resolved = await window.paperOcean.resolvePaperSuggestion(item.semanticId);
+      if (!reference && (item?.semanticId || item?.openAlexId)) {
+        const resolved = await window.paperOcean.resolvePaperSuggestion((item.semanticId || item.openAlexId)!);
         reference = resolved.arxivId;
         if (!reference && resolved.sourceUrl) { await window.paperOcean.openExternal(resolved.sourceUrl); onError("该论文没有可直接导入的 arXiv PDF，已打开来源页；下载后可用“本地 PDF”导入。"); return; }
       }
@@ -72,7 +76,6 @@ export default function PaperSearch({ papers, disabled, onOpenArxiv, onOpenLocal
               ? event.key === "ArrowDown" ? 0 : items.length - 1
               : (current + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length);
           }
-          if (event.key === "Enter" && !direct && active < 0) { event.preventDefault(); setShow(true); if (items.length) setActive(0); }
         }} />
       {query ? <button type="button" className="paper-search-clear" aria-label="清空搜索" disabled={disabled || opening} onClick={() => { setQuery(""); setActive(-1); setRemote({ query: "", items: [] }); input.current?.focus(); }}><X size={14} /></button> : <kbd className="paper-search-shortcut" aria-hidden="true">{navigator.platform.includes("Mac") ? "⌘ K" : "Ctrl K"}</kbd>}
       <button type="submit" onPointerDown={() => { suppressSubmit.current = false; }} disabled={!trimmed || disabled || opening} aria-label={direct ? "打开论文" : "搜索论文"}>{opening ? <LoaderCircle size={14} className="search-spinner" /> : direct ? "打开" : <Search size={16} />}</button>
@@ -81,7 +84,7 @@ export default function PaperSearch({ papers, disabled, onOpenArxiv, onOpenLocal
       <div className="paper-search-heading">{pending ? "正在检索在线论文…" : "论文联想"}<span>↑↓ 选择 · Enter 打开</span></div>
       <ul id={`${id}-results`} role="listbox" aria-label="论文搜索建议">
         {items.map((item, index) => <li key={item.key} id={`${id}-option-${index}`} role="option" aria-selected={active === index} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActive(index)} onClick={() => void choose(item)}>
-          <strong>{item.title}</strong><span>{item.subtitle || "论文"} · {item.source === "local" ? "已保存" : item.source === "arxiv" ? "arXiv" : "Semantic Scholar"}</span>
+          <strong>{item.title}</strong><span>{item.subtitle || "论文"} · {item.source === "local" ? "已保存" : item.source === "arxiv" ? "arXiv" : item.source === "openalex" ? "OpenAlex" : "Semantic Scholar"}</span>
         </li>)}
       </ul>
       {!items.length && !pending && <p>{trimmed.length < 2 ? "再输入一些标题文字" : "没有找到匹配论文，试试标题中的其他词"}</p>}

@@ -15,6 +15,7 @@ import useLibrary from "./hooks/useLibrary";
 import usePaperDownload from "./hooks/usePaperDownload";
 import DownloadStatus from "./components/DownloadStatus";
 import AboutPanel from "./components/AboutPanel";
+import AppearanceSettings from "./components/AppearanceSettings";
 import paperOceanMark from "./assets/paper-ocean-mark.png";
 import { buildPaperTurnPrompt } from "../electron/paper-prompt.mjs";
 import { normalizeConversations, samePaperSet } from "../electron/conversations.mjs";
@@ -126,6 +127,7 @@ export default function App() {
   const [modelError, setModelError] = useState<string | null>(null);
   const [rateLimits, setRateLimits] = useState<RateLimitInfo | null>(null);
   const [busy, setBusy] = useState(false);
+  const [busyScope, setBusyScope] = useState("");
   const busyRef = useRef(busy);
   busyRef.current = busy;
   const [opening, setOpening] = useState(false);
@@ -670,6 +672,7 @@ export default function App() {
 
     busyRef.current = true;
     if (auxiliary) setAuxiliaryBusyScope(effectiveScopeKey);
+    else setBusyScope(effectiveScopeKey);
     setBusy(true);
     cancelRequestedRef.current = false;
     setError(null);
@@ -877,12 +880,17 @@ export default function App() {
     const { activeTurnRef, cancelRequestedRef, busyRef, setError } = laneName === "auxiliary" ? auxiliaryLane : mainLane;
     if (!busyRef.current || cancelRequestedRef.current) return;
     cancelRequestedRef.current = true;
+    setError(null);
     const active = activeTurnRef.current;
     if (!active?.turnId) return;
     try {
       await window.paperOcean.codex.interrupt({ threadId: active.threadId, turnId: active.turnId });
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      // A failed interruption must leave this same turn retryable. A delayed
+      // failure from an older turn must not change the next turn's state.
+      if (activeTurnRef.current !== active) return;
+      cancelRequestedRef.current = false;
+      setError(`停止失败，请重试。${reason instanceof Error ? reason.message : String(reason)}`);
     }
   };
 
@@ -1060,6 +1068,7 @@ export default function App() {
           <button type="button" className="settings-button" aria-label="打开资料库" onClick={() => setShowLibrary(true)} disabled={!libraryReady}><Library size={17} aria-hidden="true" /></button>
           <button type="button" className="settings-button settings-button--text" onClick={showNotes} disabled={!libraryReady}>笔记</button>
           <AboutPanel />
+          <AppearanceSettings />
           <button
             type="button"
             className="settings-button theme-toggle"
@@ -1230,7 +1239,8 @@ export default function App() {
             onSaveNote={saveAnswerNote}
             selectedText={selectedText}
             currentPage={currentPage}
-            busy={busy}
+            busy={busy && busyScope === effectiveScopeKey}
+            blocked={busy && busyScope !== effectiveScopeKey}
             error={null}
             modelSelection={modelSelection}
             modelError={modelError}

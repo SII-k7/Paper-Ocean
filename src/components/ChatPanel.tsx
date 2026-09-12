@@ -37,6 +37,7 @@ type Props = {
   selectedText: string;
   currentPage: number;
   busy: boolean;
+  blocked: boolean;
   error?: string | null;
   modelSelection: CodexSelection | null;
   modelError?: string | null;
@@ -85,6 +86,7 @@ export default function ChatPanel({
   selectedText,
   currentPage,
   busy,
+  blocked,
   error,
   modelSelection,
   modelError,
@@ -128,7 +130,7 @@ export default function ChatPanel({
 
   const submit = () => {
     const value = input.trim();
-    if (!value || readOnly || !scopePapers.length || busy || !modelSelection) return;
+    if (!value || readOnly || !scopePapers.length || busy || blocked || !modelSelection) return;
     onSend(value);
     scrollToLatest();
   };
@@ -150,7 +152,9 @@ export default function ChatPanel({
     setFoundIndex(bounded);
     goToMessage(matches[bounded].id);
   };
-  const announcement = busy
+  const announcement = blocked
+    ? "另一讨论正在回答，完成后可在这里提问"
+    : busy
     ? "Codex 正在回答"
     : latestMessage?.role === "assistant" && !latestMessage.pending
       ? latestMessage.error
@@ -163,7 +167,7 @@ export default function ChatPanel({
   return (
     <section className="chat-panel" aria-label="AI 论文对话">
       <header className="chat-topbar">
-        <span className="chat-topbar__label">THINKING</span>
+        <span className="chat-topbar__label">{busy ? latestMessage?.responsePhase ?? "正在回答" : blocked ? "另一讨论正在回答" : "论文对话"}</span>
         {!!openPapers.length && (
           <div className="scope-segmented" role="group" aria-label="对话范围">
             <button
@@ -197,7 +201,7 @@ export default function ChatPanel({
           {!conversation && <option value={scopeKey}>选择讨论</option>}
           {conversations.map((item) => <option key={item.id} value={item.id}>{item.title} · {item.readOnly ? "历史" : `${item.paperIds.length} 篇`}</option>)}
         </select>
-        <button type="button" onClick={onNewConversation} disabled={busy || (!scopePapers.length && !openPapers.length)}>新讨论</button>
+        <button type="button" onClick={onNewConversation} disabled={busy || blocked || (!scopePapers.length && !openPapers.length)}>新讨论</button>
         {conversation && <input aria-label="讨论标题" value={conversation.title} onChange={(event) => onRenameConversation(event.target.value)} />}
         <p>{conversation?.readOnly ? "旧记录没有保存完整论文集合，历史与草稿已保留。请用新讨论继续。" : readOnly ? "这次讨论绑定的论文有缺失，请恢复资料或新建讨论。" : `固定论文集合：${scopePapers.map((paper) => paper.title).join("、")}`}</p>
       </div>}
@@ -222,7 +226,7 @@ export default function ChatPanel({
         <div className="selection-card">
           <span><Quote size={13} aria-hidden="true" /> 第 {currentPage} 页的选中文本</span>
           <p>{selectedText}</p>
-          <button type="button" disabled={readOnly || busy} onClick={() => onSend("请逐句解释我选中的内容，并说明它在全文论证中的作用。")}>解释这段</button>
+          <button type="button" disabled={readOnly || busy || blocked} onClick={() => onSend("请逐句解释我选中的内容，并说明它在全文论证中的作用。")}>解释这段</button>
         </div>
       )}
 
@@ -279,7 +283,7 @@ export default function ChatPanel({
             {!!scopePapers.length && (
               <div className="quick-prompts">
                 {prompts.map((prompt, index) => prompt.trim() && (
-                  <button type="button" key={index} onClick={() => onSend(prompt)} disabled={readOnly || busy || !modelSelection}>{prompt}</button>
+                  <button type="button" key={index} onClick={() => onSend(prompt)} disabled={readOnly || busy || blocked || !modelSelection}>{prompt}</button>
                 ))}
               </div>
             )}
@@ -316,6 +320,7 @@ export default function ChatPanel({
       {error && <div className="inline-error" role="alert">{error}</div>}
 
       <div className="chat-composer">
+        {blocked && <p role="status">另一讨论正在回答。完成后可在这里提问，或切回原讨论停止回答。</p>}
         {modelError && <div className="model-connection-status" role="status"><span>{modelError}</span><button type="button" onClick={onRetryModels}>重试连接</button></div>}
         <div className="reading-preferences">
           <label>回答深度 <select aria-label="回答深度" value={depth} onChange={(event) => onPreferencesChange({ ...preferences, depth: event.target.value as ReadingPreferences["depth"] })}>
@@ -348,7 +353,7 @@ export default function ChatPanel({
               submit();
             }
           }}
-          placeholder={scopePapers.length ? `询问${scopeDescription}的完整内容…` : "请先打开论文"}
+          placeholder={blocked ? "另一讨论正在回答，可先写下问题…" : scopePapers.length ? `询问${scopeDescription}的完整内容…` : "请先打开论文"}
           disabled={!scopePapers.length && !conversation?.readOnly}
           rows={3}
           aria-label="向 Codex 提问"
@@ -359,7 +364,7 @@ export default function ChatPanel({
             type="button"
             className={`send-button${busy ? " send-button--stop" : ""}`}
             onClick={busy ? onStop : submit}
-            disabled={!busy && (readOnly || !scopePapers.length || !input.trim() || !modelSelection)}
+            disabled={!busy && (blocked || readOnly || !scopePapers.length || !input.trim() || !modelSelection)}
             aria-label={busy ? "停止回答" : "发送问题"}
             title={busy ? "停止回答" : "发送问题"}
           >

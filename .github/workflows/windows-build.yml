@@ -40,6 +40,10 @@ jobs:
           node scripts/smoke-windows-installed.mjs
       - name: Test independent auxiliary conversation
         run: node scripts/smoke-auxiliary-chat.mjs
+      - name: Test appearance preferences and reading clarity
+        run: node scripts/smoke-appearance.mjs
+      - name: Test fuzzy paper search and keyboard input
+        run: node scripts/smoke-paper-search.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: paper-ocean-windows-x64
@@ -57,3 +61,5 @@ jobs:
           path: |
             output/windows-smoke/*
             output/playwright/auxiliary-chat/*.png
+            output/playwright/appearance/*.png
+            output/playwright/paper-search/*.png
