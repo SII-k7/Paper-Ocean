@@ -28,7 +28,7 @@ export default function AppearanceSettings() {
   useEffect(() => {
     const outside = (event: PointerEvent) => { if (menu.current && !menu.current.contains(event.target as Node)) menu.current.open = false; };
     const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && menu.current?.open) { menu.current.open = false; menu.current.querySelector("summary")?.focus(); event.stopPropagation(); }
+      if (event.key === "Escape" && menu.current?.open) { event.preventDefault(); menu.current.open = false; menu.current.querySelector("summary")?.focus(); event.stopPropagation(); }
     };
     document.addEventListener("pointerdown", outside);
     document.addEventListener("keydown", escape);

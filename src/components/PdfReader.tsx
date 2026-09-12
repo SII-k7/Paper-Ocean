@@ -188,7 +188,10 @@ const PdfPageView = memo(function PdfPageView({
     let cancelled = false;
     let renderTask: { cancel(): void; promise: Promise<unknown> } | null = null;
 
-    document.getPage(pageNumber).then(async (page) => {
+    // A document can be disposed between the render and passive effect.
+    // Defer the call so a synchronous PDF.js disposal error is also caught.
+    Promise.resolve().then(() => cancelled ? null : document.getPage(pageNumber)).then(async (page) => {
+      if (!page) return;
       if (cancelled || !canvasRef.current) return;
       const naturalViewport = page.getViewport({ scale: 1 });
       const viewport = page.getViewport({ scale: zoom });
@@ -217,7 +220,7 @@ const PdfPageView = memo(function PdfPageView({
         throw reason;
       });
 
-      const content = await page.getTextContent();
+      const [content] = await Promise.all([page.getTextContent(), renderPromise]);
       if (cancelled) return;
       const text = pageTextWithRanges(content.items.map((item) => "str" in item ? item : {}));
       const ranges = new Map(text.ranges.map((range) => [range.index, range]));
@@ -239,7 +242,6 @@ const PdfPageView = memo(function PdfPageView({
         }];
       });
       setTextItems(positioned);
-      await renderPromise;
       const annotations = await page.getAnnotations({ intent: "display" });
       if (!cancelled) setLinks(annotations.flatMap((annotation) => {
         if (annotation.subtype !== "Link" || !Array.isArray(annotation.rect) || annotation.rect.length !== 4 || !annotation.rect.every(Number.isFinite)) return [];
@@ -648,6 +650,7 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
 
     task.promise
       .then(async (nextDocument) => {
+        if (cancelled) return;
         const firstPage = await nextDocument.getPage(1);
         if (cancelled) return;
         const firstViewport = firstPage.getViewport({ scale: 1 });
@@ -695,7 +698,7 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
     return () => {
       cancelled = true;
       linkRequestRef.current++;
-      void task.destroy();
+      void task.destroy().catch(() => undefined);
     };
   }, [paperData, paperKey]);
 
@@ -732,9 +735,14 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
 
   useEffect(() => {
     if (!document) return;
-    let secondFrame = 0;
-    const firstFrame = window.requestAnimationFrame(() => {
-      secondFrame = window.requestAnimationFrame(() => {
+    let cancelled = false;
+    const frames = new Set<number>();
+    const afterLayout = (callback: () => void) => {
+      const frame = window.requestAnimationFrame(() => { frames.delete(frame); if (!cancelled) callback(); });
+      frames.add(frame);
+    };
+    afterLayout(() => {
+      afterLayout(() => {
         const requested = destination && destination.paperId === paperKey ? destination.position : positionRef.current;
         const target = Math.min(requested?.page ?? initialPageRef.current, document.numPages);
         suppressScrollSyncRef.current = true;
@@ -743,19 +751,19 @@ const PdfReader = forwardRef<PdfReaderHandle, Props>(function PdfReader(
         restorePosition(next);
         currentPageRef.current = target;
         onPageChangeRef.current(target);
-        window.requestAnimationFrame(() => {
+        afterLayout(() => {
           const settled = { ...next, ...viewRef.current };
           positionRef.current = settled;
           restorePosition(settled);
           initialScrollCompleteRef.current = true;
-          window.requestAnimationFrame(() => { suppressScrollSyncRef.current = false; });
+          afterLayout(() => { suppressScrollSyncRef.current = false; });
           if (paperKey) onPositionChangeRef.current(paperKey, settled);
         });
       });
     });
     return () => {
-      window.cancelAnimationFrame(firstFrame);
-      window.cancelAnimationFrame(secondFrame);
+      cancelled = true;
+      frames.forEach(frame => window.cancelAnimationFrame(frame));
     };
   }, [document, destination, paperKey, restorePosition]);
 

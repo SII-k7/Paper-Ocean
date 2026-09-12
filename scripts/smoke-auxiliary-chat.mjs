@@ -14,7 +14,7 @@ const application=await electron.launch({executablePath:electronPath,args:[path.
 try {
  const page=await application.firstWindow();page.on('dialog',dialog=>dialog.accept().catch(()=>undefined));const errors=[];page.on('pageerror',error=>errors.push(error.message));
  await application.evaluate(()=>globalThis.setupAuxTest());await page.reload();
- assert.equal(await page.locator('.chat-topbar__label').innerText(),'论文对话');
+ assert.equal(await page.locator('.chat-topbar__label').innerText(),'本讨论依据');
  await application.evaluate(({dialog},pdf)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[pdf]});},pdf);
  await page.getByRole('button',{name:'本地 PDF',exact:true}).click();
  await page.waitForFunction(()=>document.querySelector('.paper-titlebar')?.textContent.includes('全文索引就绪'));
@@ -55,7 +55,9 @@ try {
  assert.equal((await application.evaluate(()=>globalThis.requests)).at(-1).threadId,secondary.threadId);
  await aux.getByLabel('停止辅助回答').click();
  await page.waitForFunction(()=>!document.querySelector('button[aria-label="停止辅助回答"]'));
+ await page.getByLabel('讨论历史',{exact:true}).click();
  const mainScope=await page.getByLabel('选择讨论',{exact:true}).inputValue();
+ await page.getByLabel('关闭对话工具').click();
  await page.getByLabel('向 Codex 提问',{exact:true}).fill('MAIN_SWITCH_SENTINEL');
  await page.getByLabel('发送问题',{exact:true}).click();
  await page.waitForFunction(()=>document.querySelector('.chat-topbar__label')?.textContent==='等待模型响应');
@@ -66,7 +68,7 @@ try {
  await application.evaluate(({dialog},pdf)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[pdf]});},path.resolve('output/playwright/auxiliary-chat/second.pdf'));
  await page.getByRole('button',{name:'本地 PDF',exact:true}).click();
  await page.waitForFunction(()=>document.querySelectorAll('.paper-tab').length===2);
- await page.getByText('另一讨论正在回答。完成后可在这里提问，或切回原讨论停止回答。',{exact:true}).waitFor();
+ await page.getByText('另一讨论正在回答，可先写下问题。',{exact:true}).waitFor();
  assert.equal(await page.locator('.chat-panel').getByLabel('停止回答',{exact:true}).count(),0);
  const requestsBeforeDraft=(await application.evaluate(()=>globalThis.requests)).length;
  await page.getByLabel('向 Codex 提问',{exact:true}).fill('第二篇论文草稿');
@@ -75,6 +77,7 @@ try {
  assert.equal((await application.evaluate(()=>globalThis.requests)).length,requestsBeforeDraft);
  await emit(switchingMain,'切换论文期间仍保存到原讨论。');
  assert.ok(!(await page.locator('.chat-panel').innerText()).includes('切换论文期间仍保存到原讨论。'));
+ await page.getByLabel('讨论历史',{exact:true}).click();
  await page.getByLabel('选择讨论',{exact:true}).selectOption(mainScope);
  await page.locator('.chat-panel').getByText('切换论文期间仍保存到原讨论。',{exact:true}).waitFor();
  await application.evaluate(()=>{globalThis.interruptFailuresRemaining=1;});
@@ -83,7 +86,7 @@ try {
  assert.ok(await page.getByLabel('停止回答',{exact:true}).isVisible());
  await page.getByLabel('停止回答',{exact:true}).click();
  await page.waitForFunction(()=>!document.querySelector('.send-button--stop'));
- assert.equal(await page.locator('.chat-topbar__label').innerText(),'论文对话');
+ assert.equal(await page.locator('.chat-topbar__label').innerText(),'本讨论依据');
  assert.ok((await application.evaluate(()=>globalThis.interrupts)).slice(-2).every(input=>input.threadId===switchingMain.threadId));
  assert.equal(await aux.getByLabel('辅助对话问题').inputValue(),'');
  assert.ok(!(await aux.innerText()).includes('辅助窗口独立回答'));
@@ -99,4 +102,3 @@ try {
  assert.ok((await aux.boundingBox()).height<55);
  assert.deepEqual(errors,[]);console.log('PASS: simultaneous sends, unique threads/context, interleaved output isolation, collapse continues, independent interrupt, failed-stop retries in both lanes, switched-discussion busy state and output isolation, idle status, saved histories/draft and resume');
 }finally{await application.close();}
-

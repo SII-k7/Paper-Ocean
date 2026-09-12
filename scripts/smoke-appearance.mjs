@@ -102,6 +102,7 @@ try {
 
   await setTheme("light");
   await checkReadingLayout("light");
+  if (!await appearance.isVisible()) await page.getByLabel("应用设置", { exact: true }).click();
   await appearance.click();
   await reduceMotion.check();
   await glass.uncheck();
@@ -114,6 +115,7 @@ try {
   await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.on("will-prevent-unload", event => event.preventDefault()));
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => document.documentElement.dataset.material === "solid" && document.documentElement.dataset.motion === "reduced");
+  if (!await appearance.isVisible()) await page.getByLabel("应用设置", { exact: true }).click();
   await appearance.click();
   assert.equal(await glass.isChecked(), false, "glass opt-out survives reload");
   assert.equal(await reduceMotion.isChecked(), true, "reduced motion survives reload");
@@ -131,6 +133,7 @@ try {
   await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1180, 768));
   await page.waitForFunction(() => innerWidth <= 1180);
   await checkReadingLayout("narrow dark");
+  if (!await appearance.isVisible()) await page.getByLabel("应用设置", { exact: true }).click();
   await appearance.click();
   const panel = await page.locator(".appearance-settings__panel").boundingBox();
   const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));

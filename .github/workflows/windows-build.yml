@@ -44,6 +44,11 @@ jobs:
         run: node scripts/smoke-appearance.mjs
       - name: Test fuzzy paper search and keyboard input
         run: node scripts/smoke-paper-search.mjs
+      - name: Test workspace, drafts, and evidence-to-note flow
+        run: |
+          node scripts/smoke-workspace-ui.mjs
+          node scripts/smoke-conversation-ui.mjs
+          node scripts/smoke-reading-flow.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: paper-ocean-windows-x64
@@ -63,3 +68,6 @@ jobs:
             output/playwright/auxiliary-chat/*.png
             output/playwright/appearance/*.png
             output/playwright/paper-search/*.png
+            output/playwright/workspace-ui/*.png
+            output/playwright/conversation-ui/*.png
+            output/playwright/reading-flow/*.png

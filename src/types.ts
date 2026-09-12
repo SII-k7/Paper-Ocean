@@ -89,6 +89,7 @@ export type OpenedPaper = PaperRecord & {
 };
 
 export type ChatMessage = {
+  attachment?: EvidenceAnchor;
   id: string;
   role: "user" | "assistant" | "system";
   text: string;
@@ -201,6 +202,7 @@ export type LibraryState = {
   lastScopeKey?: string;
   chatPositions?: Record<string, ChatPosition>;
   draftsByScope?: Record<string, string>;
+  draftAttachmentsByScope?: Record<string, EvidenceAnchor | undefined>;
   conversations?: Record<string, ConversationRecord>;
   lastConversationByPaper?: Record<string, string>;
   readingPreferencesByScope?: Record<string, ReadingPreferences>;

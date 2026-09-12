@@ -5,6 +5,9 @@ import { installBrowserBridge } from "./browser-bridge";
 import { installBrowserDemoBridge } from "./demo-bridge";
 import "./styles.css";
 import "./glass.css";
+import "./workspace-ui.css";
+import "./conversation-ui.css";
+import "./reading-workspace.css";
 
 if (!window.paperOcean) {
   if (import.meta.env.VITE_PAPER_OCEAN_MODE === "demo") installBrowserDemoBridge();

@@ -20,7 +20,10 @@ try {
   await page.locator(".pdf-page canvas").first().waitFor();
   await page.waitForFunction(()=>document.querySelector('.paper-titlebar')?.textContent.includes('全文索引就绪'));
   await page.getByRole("button",{name:"打开资料库",exact:true}).click();
-  await page.getByRole("button",{name:"论文池 · 看过的论文",exact:true}).click();
+  const drawer=page.getByRole("complementary",{name:"资料库",exact:true});
+  await drawer.waitFor();
+  assert.equal(await page.locator("dialog[open]").count(),0);
+  await drawer.getByRole("button",{name:"论文池 · 看过的论文",exact:true}).click();
   await page.locator(".paper-pool article").first().waitFor();
   const pool=await page.evaluate(()=>window.paperOcean.pool.status());
   assert.equal(pool.papers.length,1);assert.ok(pool.papers[0].seenAt>0);assert.equal(pool.papers[0].askedAt,0);
@@ -29,8 +32,8 @@ try {
   const updater=await page.evaluate(()=>window.paperOcean.updates.status());
   assert.equal(updater.supported,true);assert.equal(updater.mode,"deb");
   assert.equal(await page.evaluate(()=>window.paperOcean.runtime),"electron");
-  await page.getByText("同步设置",{exact:true}).click();
-  await page.getByLabel("WebDAV 文件夹",{exact:true}).fill("https://example.com/pool/");
+  await drawer.getByText("同步设置",{exact:true}).click();
+  await drawer.getByLabel("WebDAV 文件夹",{exact:true}).fill("https://example.com/pool/");
   await fs.mkdir("output/linux-smoke",{recursive:true});
   await page.screenshot({path:"output/linux-smoke/installed.png"});
   assert.deepEqual(errors,[]);

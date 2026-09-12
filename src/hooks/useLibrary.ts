@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
 import { createLibrarySaver, type SaveState } from "../library-saver.mjs";
+import { createSaveStateNotifier } from "../save-state-notifier.mjs";
 import type { LibraryState } from "../types";
 
 const EMPTY_LIBRARY: LibraryState = {
@@ -12,15 +13,17 @@ export default function useLibrary() {
   const [saveState, setSaveState] = useState<SaveState>({ status: "saved" });
   const latest = useRef(library);
   const readyRef = useRef(false);
+  const notifySaveState = useRef<ReturnType<typeof createSaveStateNotifier> | null>(null);
+  if (!notifySaveState.current) notifySaveState.current = createSaveStateNotifier(setSaveState);
   const saver = useRef<ReturnType<typeof createLibrarySaver> | null>(null);
-  if (!saver.current) saver.current = createLibrarySaver((state) => window.paperOcean.library.save(state), setSaveState);
+  if (!saver.current) saver.current = createLibrarySaver((state) => window.paperOcean.library.save(state), notifySaveState.current);
 
   const initialize = useCallback((state: LibraryState) => {
     latest.current = state;
     readyRef.current = true;
     setState(state);
     setReady(true);
-    setSaveState({ status: "saved" });
+    notifySaveState.current!({ status: "saved" });
   }, []);
 
   const setLibrary = useCallback((update: SetStateAction<LibraryState>) => {
